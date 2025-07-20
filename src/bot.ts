@@ -2,15 +2,23 @@ import TelegramBot from 'node-telegram-bot-api';
 import axios from 'axios';
 import cron from 'node-cron';
 import dotenv from 'dotenv';
+import { connectToDatabase } from './database';
+import { Alert as AlertModel, IAlert } from './models/Alert';
+import { UserSettings as UserSettingsModel, IUserSettings } from './models/UserSettings';
 
 dotenv.config();
 
 interface PriceData {
-  price: number;
-  change24h: number;
-  change7d: number;
-  marketCap: number;
-  volume24h: number;
+  priceUsd: number;
+  priceEur: number;
+  change24hUsd: number;
+  change24hEur: number;
+  change7dUsd: number;
+  change7dEur: number;
+  marketCapUsd: number;
+  marketCapEur: number;
+  volume24hUsd: number;
+  volume24hEur: number;
   timestamp: Date;
 }
 
@@ -24,16 +32,109 @@ interface Alert {
 class EthereumBot {
   private bot: TelegramBot;
   private subscribedChats: Set<number> = new Set();
-  private lastPrice: number = 0;
+  private lastPriceUsd: number = 0;
+  private lastPriceEur: number = 0;
   private alerts: Map<number, Alert[]> = new Map();
   private userUpdateIntervals: Map<number, '15min' | '30min' | '1h' | '2h'> = new Map();
+  private userSettings: Map<number, { currency: 'usd' | 'eur' }> = new Map();
   private priceHistory: PriceData[] = [];
   private scheduledJobs: Map<string, any> = new Map();
+  
 
   constructor(token: string) {
     this.bot = new TelegramBot(token, { polling: true });
-    this.setupCommands();
-    this.startPriceUpdates();
+    this.initializeBot();
+  }
+
+  private async initializeBot(): Promise<void> {
+    try {
+      await connectToDatabase();
+      await this.loadAlertsFromDatabase();
+      await this.loadUserSettingsFromDatabase();
+      this.setupCommands();
+      this.startPriceUpdates();
+    } catch (error) {
+      console.error('❌ Error initializing bot:', error);
+    }
+  }
+
+  private async loadAlertsFromDatabase(): Promise<void> {
+    try {
+      const alertDocs = await AlertModel.find({ active: true });
+      this.alerts.clear();
+      
+      alertDocs.forEach((alertDoc: IAlert) => {
+        const userAlerts = this.alerts.get(alertDoc.chatId) || [];
+        userAlerts.push({
+          chatId: alertDoc.chatId,
+          type: alertDoc.type,
+          price: alertDoc.price,
+          active: alertDoc.active
+        });
+        this.alerts.set(alertDoc.chatId, userAlerts);
+      });
+      
+      console.log(`✅ Loaded ${alertDocs.length} alerts from database`);
+    } catch (error) {
+      console.error('❌ Error loading alerts from database:', error);
+    }
+  }
+
+  private async loadUserSettingsFromDatabase(): Promise<void> {
+    try {
+      const settingsDocs = await UserSettingsModel.find({});
+      this.userSettings.clear();
+      
+      settingsDocs.forEach((settingsDoc: IUserSettings) => {
+        this.userSettings.set(settingsDoc.chatId, {
+          currency: settingsDoc.currency
+        });
+      });
+      
+      console.log(`✅ Loaded ${settingsDocs.length} user settings from database`);
+    } catch (error) {
+      console.error('❌ Error loading user settings from database:', error);
+    }
+  }
+
+  private async getUserSettings(chatId: number): Promise<{ currency: 'usd' | 'eur' }> {
+    let settings = this.userSettings.get(chatId);
+    
+    if (!settings) {
+      // Create default settings for new user
+      settings = { currency: 'usd' };
+      try {
+        await UserSettingsModel.findOneAndUpdate(
+          { chatId },
+          { chatId, currency: settings.currency },
+          { upsert: true, new: true }
+        );
+        this.userSettings.set(chatId, settings);
+        console.log(`✅ Created default settings for chat ${chatId}`);
+      } catch (error) {
+        console.error('❌ Error creating default user settings:', error);
+      }
+    }
+    
+    return settings;
+  }
+
+  private async updateUserSettings(chatId: number, updates: Partial<{ currency: 'usd' | 'eur' }>): Promise<void> {
+    try {
+      const currentSettings = await this.getUserSettings(chatId);
+      const newSettings = { ...currentSettings, ...updates };
+      
+      await UserSettingsModel.findOneAndUpdate(
+        { chatId },
+        { chatId, ...newSettings },
+        { upsert: true, new: true }
+      );
+      
+      this.userSettings.set(chatId, newSettings);
+      console.log(`✅ Updated settings for chat ${chatId}:`, updates);
+    } catch (error) {
+      console.error('❌ Error updating user settings:', error);
+    }
   }
 
   private setupCommands(): void {
@@ -49,6 +150,7 @@ class EthereumBot {
         '/alerts \\- Manage alerts\n' +
         '/setalert \\[price\\] \\- Create alert\n' +
         '/interval \\- Set update frequency\n' +
+        '/settings \\- Configure currency\n' +
         '/help \\- All commands\n' +
         '/stop \\- Stop updates',
         { parse_mode: 'MarkdownV2' }
@@ -66,6 +168,7 @@ class EthereumBot {
         '/delalert \\[number\\] \\- Delete specific alert\n' +
         '/clearalerts \\- Delete all alerts\n' +
         '/interval \\- Set update frequency \\(15min/30min/1h/2h\\)\n' +
+        '/settings \\- Configure currency\n' +
         '/stop \\- Stop updates',
         { parse_mode: 'MarkdownV2' }
       );
@@ -84,7 +187,7 @@ class EthereumBot {
       
       try {
         const priceData = await this.getEthereumPrice();
-        const message = this.formatPriceMessage(priceData);
+        const message = await this.formatPriceMessage(priceData, chatId);
         this.bot.sendMessage(chatId, message, { parse_mode: 'MarkdownV2' });
       } catch (error) {
         this.bot.sendMessage(chatId, '❌ Error fetching price\\. Try again later\\.', { parse_mode: 'MarkdownV2' });
@@ -119,7 +222,7 @@ class EthereumBot {
       }
     });
 
-    this.bot.onText(/\/setalert (.+)/, (msg, match) => {
+    this.bot.onText(/\/setalert (.+)/, async (msg, match) => {
       const chatId = msg.chat.id;
       const input = match![1].trim().toLowerCase();
       
@@ -142,9 +245,23 @@ class EthereumBot {
       }
       
       const userAlerts = this.alerts.get(chatId) || [];
+      
+      // Check if user already has 3 alerts (maximum allowed)
+      if (userAlerts.length >= 3) {
+        this.bot.sendMessage(chatId, '❌ Maximum 3 alerts allowed\\. Delete some alerts first with /delalert or /clearalerts', { parse_mode: 'MarkdownV2' });
+        return;
+      }
+      
       const newAlert: Alert = { chatId, type, price, active: true };
       userAlerts.push(newAlert);
       this.alerts.set(chatId, userAlerts);
+      
+      try {
+        await AlertModel.create({ chatId, type, price, active: true });
+        console.log(`✅ Alert saved to database for chat ${chatId}`);
+      } catch (error) {
+        console.error('❌ Error saving alert to database:', error);
+      }
       
       const escapeText = (text: string) => text.replace(/[_*[\]()~`>#+=|{}.!-]/g, '\\$&');
       const emoji = type === 'above' ? '📈' : '📉';
@@ -154,7 +271,7 @@ class EthereumBot {
       );
     });
 
-    this.bot.onText(/\/delalert (.+)/, (msg, match) => {
+    this.bot.onText(/\/delalert (.+)/, async (msg, match) => {
       const chatId = msg.chat.id;
       const alertNumber = parseInt(match![1]);
       const userAlerts = this.alerts.get(chatId) || [];
@@ -164,6 +281,7 @@ class EthereumBot {
         return;
       }
       
+      const alertToDelete = userAlerts[alertNumber - 1];
       userAlerts.splice(alertNumber - 1, 1);
       
       if (userAlerts.length === 0) {
@@ -172,12 +290,32 @@ class EthereumBot {
         this.alerts.set(chatId, userAlerts);
       }
       
+      try {
+        await AlertModel.deleteOne({ 
+          chatId: alertToDelete.chatId, 
+          type: alertToDelete.type, 
+          price: alertToDelete.price,
+          active: true 
+        });
+        console.log(`✅ Alert deleted from database for chat ${chatId}`);
+      } catch (error) {
+        console.error('❌ Error deleting alert from database:', error);
+      }
+      
       this.bot.sendMessage(chatId, '🗑️ *Alert deleted*', { parse_mode: 'MarkdownV2' });
     });
 
-    this.bot.onText(/\/clearalerts/, (msg) => {
+    this.bot.onText(/\/clearalerts/, async (msg) => {
       const chatId = msg.chat.id;
       this.alerts.delete(chatId);
+      
+      try {
+        await AlertModel.deleteMany({ chatId, active: true });
+        console.log(`✅ All alerts deleted from database for chat ${chatId}`);
+      } catch (error) {
+        console.error('❌ Error clearing alerts from database:', error);
+      }
+      
       this.bot.sendMessage(chatId, '🗑️ All alerts deleted\\.', { parse_mode: 'MarkdownV2' });
     });
 
@@ -204,7 +342,32 @@ class EthereumBot {
       );
     });
 
-    this.bot.on('callback_query', (callbackQuery) => {
+    this.bot.onText(/\/settings/, async (msg) => {
+      const chatId = msg.chat.id;
+      const settings = await this.getUserSettings(chatId);
+      
+      const keyboard = {
+        inline_keyboard: [
+          [
+            { text: '💰 Currency', callback_data: 'settings_currency' }
+          ],
+          [
+            { text: '✅ Done', callback_data: 'settings_done' }
+          ]
+        ]
+      };
+      
+      const currencySymbol = settings.currency === 'usd' ? '$' : '€';
+      
+      this.bot.sendMessage(chatId, 
+        `⚙️ *USER SETTINGS*\n\n` +
+        `💰 *Currency:* ${currencySymbol} ${settings.currency.toUpperCase()}\n\n` +
+        `Select what you want to change:`,
+        { parse_mode: 'MarkdownV2', reply_markup: keyboard }
+      );
+    });
+
+    this.bot.on('callback_query', async (callbackQuery) => {
       const message = callbackQuery.message;
       const data = callbackQuery.data;
       const chatId = message!.chat.id;
@@ -225,6 +388,114 @@ class EthereumBot {
             parse_mode: 'MarkdownV2'
           }
         );
+      } else if (data?.startsWith('settings_')) {
+        const setting = data.replace('settings_', '');
+        
+        if (setting === 'currency') {
+          const keyboard = {
+            inline_keyboard: [
+              [
+                { text: '🇺🇸 USD ($)', callback_data: 'curr_usd' },
+                { text: '🇪🇺 EUR (€)', callback_data: 'curr_eur' }
+              ],
+              [
+                { text: '← Back', callback_data: 'settings_back' }
+              ]
+            ]
+          };
+          
+          this.bot.editMessageText(
+            `💰 *SELECT CURRENCY*\n\nChoose your preferred currency:`,
+            {
+              chat_id: chatId,
+              message_id: message!.message_id,
+              parse_mode: 'MarkdownV2',
+              reply_markup: keyboard
+            }
+          );
+        } else if (setting === 'done') {
+          // Close settings - delete the message
+          try {
+            await this.bot.deleteMessage(chatId, message!.message_id);
+            this.bot.answerCallbackQuery(callbackQuery.id, { 
+              text: 'Settings saved!' 
+            });
+          } catch (error: any) {
+            console.error('Error closing settings:', error);
+          }
+        } else if (setting === 'back') {
+          const settings = await this.getUserSettings(chatId);
+          const keyboard = {
+            inline_keyboard: [
+              [
+                { text: '💰 Currency', callback_data: 'settings_currency' }
+              ],
+              [
+                { text: '✅ Done', callback_data: 'settings_done' }
+              ]
+            ]
+          };
+          
+          const currencySymbol = settings.currency === 'usd' ? '$' : '€';
+          
+          try {
+            this.bot.editMessageText(
+              `⚙️ *USER SETTINGS*\n\n` +
+              `💰 *Currency:* ${currencySymbol} ${settings.currency.toUpperCase()}\n\n` +
+              `Select what you want to change:`,
+              {
+                chat_id: chatId,
+                message_id: message!.message_id,
+                parse_mode: 'MarkdownV2',
+                reply_markup: keyboard
+              }
+            );
+          } catch (error: any) {
+            if (error.code !== 'ETELEGRAM' || !error.response?.body?.description?.includes('message is not modified')) {
+              console.error('Error editing settings message:', error);
+            }
+          }
+        }
+      } else if (data?.startsWith('curr_')) {
+        const currency = data.replace('curr_', '') as 'usd' | 'eur';
+        await this.updateUserSettings(chatId, { currency });
+        
+        this.bot.answerCallbackQuery(callbackQuery.id, { 
+          text: `Currency changed to ${currency.toUpperCase()}` 
+        });
+        
+        // Go back to settings menu
+        const settings = await this.getUserSettings(chatId);
+        const keyboard = {
+          inline_keyboard: [
+            [
+              { text: '💰 Currency', callback_data: 'settings_currency' }
+            ],
+            [
+              { text: '✅ Done', callback_data: 'settings_done' }
+            ]
+          ]
+        };
+        
+        const currencySymbol = settings.currency === 'usd' ? '$' : '€';
+        
+        try {
+          this.bot.editMessageText(
+            `⚙️ *USER SETTINGS*\n\n` +
+            `💰 *Currency:* ${currencySymbol} ${settings.currency.toUpperCase()}\n\n` +
+            `Select what you want to change:`,
+            {
+              chat_id: chatId,
+              message_id: message!.message_id,
+              parse_mode: 'MarkdownV2',
+              reply_markup: keyboard
+            }
+          );
+        } catch (error: any) {
+          if (error.code !== 'ETELEGRAM' || !error.response?.body?.description?.includes('message is not modified')) {
+            console.error('Error editing settings message:', error);
+          }
+        }
       }
     });
   }
@@ -232,17 +503,22 @@ class EthereumBot {
   private async getEthereumPrice(): Promise<PriceData> {
     try {
       const response = await axios.get(
-        'https://api.coingecko.com/api/v3/simple/price?ids=ethereum&vs_currencies=usd&include_24hr_change=true&include_7d_change=true&include_market_cap=true&include_24hr_vol=true'
+        'https://api.coingecko.com/api/v3/simple/price?ids=ethereum&vs_currencies=usd,eur&include_24hr_change=true&include_7d_change=true&include_market_cap=true&include_24hr_vol=true'
       );
 
       const ethData = response.data.ethereum;
       
       return {
-        price: ethData.usd,
-        change24h: ethData.usd_24h_change || 0,
-        change7d: ethData.usd_7d_change || 0,
-        marketCap: ethData.usd_market_cap || 0,
-        volume24h: ethData.usd_24h_vol || 0,
+        priceUsd: ethData.usd,
+        priceEur: ethData.eur,
+        change24hUsd: ethData.usd_24h_change || 0,
+        change24hEur: ethData.eur_24h_change || 0,
+        change7dUsd: ethData.usd_7d_change || 0,
+        change7dEur: ethData.eur_7d_change || 0,
+        marketCapUsd: ethData.usd_market_cap || 0,
+        marketCapEur: ethData.eur_market_cap || 0,
+        volume24hUsd: ethData.usd_24h_vol || 0,
+        volume24hEur: ethData.eur_24h_vol || 0,
         timestamp: new Date()
       };
     } catch (error) {
@@ -251,15 +527,22 @@ class EthereumBot {
     }
   }
 
-  private formatPriceMessage(data: PriceData): string {
-    const { price, change24h, timestamp } = data;
+  private async formatPriceMessage(data: PriceData, chatId: number): Promise<string> {
+    const settings = await this.getUserSettings(chatId);
+    const currency = settings.currency;
+    
+    const price = currency === 'usd' ? data.priceUsd : data.priceEur;
+    const change24h = currency === 'usd' ? data.change24hUsd : data.change24hEur;
+    const lastPrice = currency === 'usd' ? this.lastPriceUsd : this.lastPriceEur;
+    
     const changeEmoji = change24h >= 0 ? '📈' : '📉';
     const changeColor = change24h >= 0 ? '🟢' : '🔴';
+    const currencySymbol = currency === 'usd' ? '$' : '€';
     
     let trendEmoji = '➡️';
-    if (this.lastPrice > 0) {
-      if (price > this.lastPrice) trendEmoji = '⬆️';
-      else if (price < this.lastPrice) trendEmoji = '⬇️';
+    if (lastPrice > 0) {
+      if (price > lastPrice) trendEmoji = '⬆️';
+      else if (price < lastPrice) trendEmoji = '⬇️';
     }
 
     const escapeMarkdown = (text: string) => {
@@ -273,24 +556,29 @@ class EthereumBot {
     
     const changeSign = change24h >= 0 ? '\\+' : '';
     const changeFormatted = changeSign + escapeMarkdown(change24h.toFixed(2));
-    const timeFormatted = escapeMarkdown(timestamp.toLocaleTimeString('en-US'));
+    const timeFormatted = escapeMarkdown(data.timestamp.toLocaleTimeString('en-US'));
 
     const message = 
       `${changeEmoji} *ETHEREUM \\(ETH\\)*\n\n` +
-      `💰 *Price:* $${priceFormatted}\n\n` +
+      `💰 *Price:* ${currencySymbol}${priceFormatted}\n\n` +
       `${changeColor} *24h:* ${changeFormatted}%\n\n` +
-      `${trendEmoji} *Trend:* ${this.getTrendText(price)}\n\n` +
+      `${trendEmoji} *Trend:* ${this.getTrendText(price, lastPrice)}\n\n` +
       `🕐 *Updated:* ${timeFormatted}`;
 
-    this.lastPrice = price;
+    if (currency === 'usd') {
+      this.lastPriceUsd = price;
+    } else {
+      this.lastPriceEur = price;
+    }
+    
     return message;
   }
 
-  private getTrendText(currentPrice: number): string {
-    if (this.lastPrice === 0) return 'Initial';
+  private getTrendText(currentPrice: number, lastPrice: number): string {
+    if (lastPrice === 0) return 'Initial';
     
-    const diff = currentPrice - this.lastPrice;
-    const diffPercent = (diff / this.lastPrice) * 100;
+    const diff = currentPrice - lastPrice;
+    const diffPercent = (diff / lastPrice) * 100;
     
     if (Math.abs(diffPercent) < 0.1) return 'Stable';
     return diff > 0 ? 'Rising' : 'Falling';
@@ -298,7 +586,7 @@ class EthereumBot {
 
   private async checkAlerts(priceData: PriceData): Promise<void> {
     if (this.alerts.size > 0) {
-      console.log(`Checking alerts for price: $${priceData.price.toLocaleString()}`);
+      console.log(`Checking alerts for price USD: $${priceData.priceUsd.toLocaleString()}, EUR: €${priceData.priceEur.toLocaleString()}`);
     }
     
     for (const [chatId, userAlerts] of this.alerts.entries()) {
@@ -307,17 +595,22 @@ class EthereumBot {
         
         if (!alert.active) continue;
         
+        // Get user settings to determine which price to use
+        const userSettings = await this.getUserSettings(chatId);
+        const currentPrice = userSettings.currency === 'usd' ? priceData.priceUsd : priceData.priceEur;
+        const currencySymbol = userSettings.currency === 'usd' ? '$' : '€';
+        
         let shouldTrigger = false;
         let alertMessage = '';
         
-        if (alert.type === 'above' && priceData.price >= alert.price) {
+        if (alert.type === 'above' && currentPrice >= alert.price) {
           shouldTrigger = true;
           const escapeText = (text: string) => text.replace(/[_*[\]()~`>#+=|{}.!-]/g, '\\$&');
-          alertMessage = `🚨 *PRICE ALERT*\n\n📈 ETH is now *above* $${escapeText(alert.price.toLocaleString())}\n💰 Current: $${escapeText(priceData.price.toLocaleString())}`;
-        } else if (alert.type === 'below' && priceData.price <= alert.price) {
+          alertMessage = `🚨 *PRICE ALERT*\n\n📈 ETH is now *above* ${currencySymbol}${escapeText(alert.price.toLocaleString())}\n💰 Current: ${currencySymbol}${escapeText(currentPrice.toLocaleString())}`;
+        } else if (alert.type === 'below' && currentPrice <= alert.price) {
           shouldTrigger = true;
           const escapeText = (text: string) => text.replace(/[_*[\]()~`>#+=|{}.!-]/g, '\\$&');
-          alertMessage = `🚨 *PRICE ALERT*\n\n📉 ETH is now *below* $${escapeText(alert.price.toLocaleString())}\n💰 Current: $${escapeText(priceData.price.toLocaleString())}`;
+          alertMessage = `🚨 *PRICE ALERT*\n\n📉 ETH is now *below* ${currencySymbol}${escapeText(alert.price.toLocaleString())}\n💰 Current: ${currencySymbol}${escapeText(currentPrice.toLocaleString())}`;
         }
         
         if (shouldTrigger) {
@@ -325,6 +618,21 @@ class EthereumBot {
           try {
             await this.bot.sendMessage(chatId, alertMessage, { parse_mode: 'MarkdownV2' });
             console.log(`✅ Alert sent successfully to chat ${chatId}`);
+            
+            // Delete alert from database when triggered
+            try {
+              await AlertModel.deleteOne({ 
+                chatId: alert.chatId, 
+                type: alert.type, 
+                price: alert.price,
+                active: true 
+              });
+              console.log(`✅ Triggered alert deleted from database for chat ${chatId}`);
+            } catch (dbError) {
+              console.error('❌ Error deleting triggered alert from database:', dbError);
+            }
+            
+            // Remove from memory
             userAlerts.splice(i, 1);
             if (userAlerts.length === 0) {
               this.alerts.delete(chatId);
@@ -342,34 +650,44 @@ class EthereumBot {
   }
 
   private async checkCrashAlerts(priceData: PriceData): Promise<void> {
-    if (this.lastPrice === 0 || this.priceHistory.length < 2) return;
+    if ((this.lastPriceUsd === 0 && this.lastPriceEur === 0) || this.priceHistory.length < 2) return;
     
-    const priceChange = ((priceData.price - this.lastPrice) / this.lastPrice) * 100;
-    const abs24hChange = Math.abs(priceData.change24h);
-    
-    let shouldAlert = false;
-    let alertMessage = '';
-    
-    if (priceChange <= -10) {
-      shouldAlert = true;
-      alertMessage = `🚨 *CRASH ALERT*\n\n💥 ETH dropped *${Math.abs(priceChange).toFixed(2)}%* since last update\\!\n\n💰 From: $${this.lastPrice.toLocaleString()}\n💰 To: $${priceData.price.toLocaleString()}\n\n📉 24h change: ${priceData.change24h.toFixed(2)}%`;
-    } else if (priceChange >= 15) {
-      shouldAlert = true;
-      alertMessage = `🚀 *PUMP ALERT*\n\n🚀 ETH pumped *${priceChange.toFixed(2)}%* since last update\\!\n\n💰 From: $${this.lastPrice.toLocaleString()}\n💰 To: $${priceData.price.toLocaleString()}\n\n📈 24h change: ${priceData.change24h.toFixed(2)}%`;
-    } else if (abs24hChange >= 20) {
-      shouldAlert = true;
-      const direction = priceData.change24h > 0 ? 'UP' : 'DOWN';
-      const emoji = priceData.change24h > 0 ? '🚀' : '💥';
-      alertMessage = `${emoji} *EXTREME VOLATILITY*\n\n⚠️ ETH moved *${abs24hChange.toFixed(2)}%* ${direction} in 24h\\!\n\n💰 Current: $${priceData.price.toLocaleString()}\n📊 24h change: ${priceData.change24h > 0 ? '+' : ''}${priceData.change24h.toFixed(2)}%`;
-    }
-    
-    if (shouldAlert) {
-      for (const chatId of this.subscribedChats) {
-        try {
-          await this.bot.sendMessage(chatId, alertMessage, { parse_mode: 'MarkdownV2' });
-        } catch (error) {
-          console.error(`Error sending crash alert to chat ${chatId}:`, error);
+    // Send alerts to all subscribed chats with their preferred currency
+    for (const chatId of this.subscribedChats) {
+      try {
+        const userSettings = await this.getUserSettings(chatId);
+        const currency = userSettings.currency;
+        const currentPrice = currency === 'usd' ? priceData.priceUsd : priceData.priceEur;
+        const lastPrice = currency === 'usd' ? this.lastPriceUsd : this.lastPriceEur;
+        const change24h = currency === 'usd' ? priceData.change24hUsd : priceData.change24hEur;
+        const currencySymbol = currency === 'usd' ? '$' : '€';
+        
+        if (lastPrice === 0) continue;
+        
+        const priceChange = ((currentPrice - lastPrice) / lastPrice) * 100;
+        const abs24hChange = Math.abs(change24h);
+        
+        let shouldAlert = false;
+        let alertMessage = '';
+        
+        if (priceChange <= -10) {
+          shouldAlert = true;
+          alertMessage = `🚨 *CRASH ALERT*\\n\\n💥 ETH dropped *${Math.abs(priceChange).toFixed(2)}%* since last update\\!\\n\\n💰 From: ${currencySymbol}${lastPrice.toLocaleString()}\\n💰 To: ${currencySymbol}${currentPrice.toLocaleString()}\\n\\n📉 24h change: ${change24h.toFixed(2)}%`;
+        } else if (priceChange >= 15) {
+          shouldAlert = true;
+          alertMessage = `🚀 *PUMP ALERT*\\n\\n🚀 ETH pumped *${priceChange.toFixed(2)}%* since last update\\!\\n\\n💰 From: ${currencySymbol}${lastPrice.toLocaleString()}\\n💰 To: ${currencySymbol}${currentPrice.toLocaleString()}\\n\\n📈 24h change: ${change24h.toFixed(2)}%`;
+        } else if (abs24hChange >= 20) {
+          shouldAlert = true;
+          const direction = change24h > 0 ? 'UP' : 'DOWN';
+          const emoji = change24h > 0 ? '🚀' : '💥';
+          alertMessage = `${emoji} *EXTREME VOLATILITY*\\n\\n⚠️ ETH moved *${abs24hChange.toFixed(2)}%* ${direction} in 24h\\!\\n\\n💰 Current: ${currencySymbol}${currentPrice.toLocaleString()}\\n📊 24h change: ${change24h > 0 ? '+' : ''}${change24h.toFixed(2)}%`;
         }
+        
+        if (shouldAlert) {
+          await this.bot.sendMessage(chatId, alertMessage, { parse_mode: 'MarkdownV2' });
+        }
+      } catch (error) {
+        console.error(`Error sending crash alert to chat ${chatId}:`, error);
       }
     }
   }
@@ -415,9 +733,14 @@ class EthereumBot {
       
       await this.checkAlerts(priceData);
       
-      const message = this.formatPriceMessage(priceData);
+      const messages = await Promise.all(
+        targetChats.map(async (chatId) => {
+          const message = await this.formatPriceMessage(priceData, chatId);
+          return { chatId, message };
+        })
+      );
 
-      for (const chatId of targetChats) {
+      for (const { chatId, message } of messages) {
         try {
           await this.bot.sendMessage(chatId, message, { parse_mode: 'MarkdownV2' });
         } catch (error) {
@@ -437,7 +760,8 @@ class EthereumBot {
       const priceData = await this.getEthereumPrice();
       await this.checkAlerts(priceData);
       await this.checkCrashAlerts(priceData);
-      this.lastPrice = priceData.price;
+      this.lastPriceUsd = priceData.priceUsd;
+      this.lastPriceEur = priceData.priceEur;
     } catch (error) {
       console.error('Error checking extreme movements:', error);
     }

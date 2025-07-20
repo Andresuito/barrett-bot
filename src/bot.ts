@@ -2,8 +2,6 @@ import TelegramBot from 'node-telegram-bot-api';
 import axios from 'axios';
 import cron from 'node-cron';
 import dotenv from 'dotenv';
-import sqlite3 from 'sqlite3';
-import path from 'path';
 
 dotenv.config();
 
@@ -31,211 +29,17 @@ class EthereumBot {
   private userUpdateIntervals: Map<number, '15min' | '30min' | '1h' | '2h'> = new Map();
   private priceHistory: PriceData[] = [];
   private scheduledJobs: Map<string, any> = new Map();
-  private db!: sqlite3.Database;
 
   constructor(token: string) {
     this.bot = new TelegramBot(token, { polling: true });
-    this.initDatabase();
     this.setupCommands();
     this.startPriceUpdates();
   }
 
-  private async initDatabase(): Promise<void> {
-    const dbPath = path.join(process.cwd(), 'ethereum-bot.db');
-    
-    this.db = new sqlite3.Database(dbPath, (err) => {
-      if (err) {
-        console.error('Error opening database:', err.message);
-        process.exit(1);
-      }
-      console.log('📊 SQLite database connected');
-    });
-
-    return new Promise((resolve, reject) => {
-      this.db.serialize(() => {
-        this.db.run(`
-          CREATE TABLE IF NOT EXISTS alerts (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            chat_id INTEGER NOT NULL,
-            type TEXT NOT NULL CHECK (type IN ('above', 'below')),
-            price REAL NOT NULL,
-            active BOOLEAN NOT NULL DEFAULT 1,
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-          )
-        `, (err) => {
-          if (err) {
-            console.error('Error creating alerts table:', err.message);
-            reject(err);
-          } else {
-            console.log('📋 Alerts table ready');
-            this.loadAlertsFromDatabase().then(resolve).catch(reject);
-          }
-        });
-
-        this.db.run(`
-          CREATE TABLE IF NOT EXISTS subscriptions (
-            chat_id INTEGER PRIMARY KEY,
-            update_interval TEXT NOT NULL DEFAULT '1h' CHECK (update_interval IN ('15min', '30min', '1h', '2h')),
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-          )
-        `, (err) => {
-          if (err) {
-            console.error('Error creating subscriptions table:', err.message);
-          } else {
-            console.log('📝 Subscriptions table ready');
-            this.loadSubscriptionsFromDatabase();
-          }
-        });
-      });
-    });
-  }
-
-  private async loadAlertsFromDatabase(): Promise<void> {
-    return new Promise((resolve, reject) => {
-      this.db.all(`
-        SELECT chat_id, type, price, active 
-        FROM alerts 
-        WHERE active = 1
-      `, (err, rows: any[]) => {
-        if (err) {
-          reject(err);
-          return;
-        }
-
-        this.alerts.clear();
-        rows.forEach(row => {
-          const chatId = row.chat_id;
-          const alert: Alert = {
-            chatId: row.chat_id,
-            type: row.type as 'above' | 'below',
-            price: row.price,
-            active: Boolean(row.active)
-          };
-
-          if (!this.alerts.has(chatId)) {
-            this.alerts.set(chatId, []);
-          }
-          this.alerts.get(chatId)!.push(alert);
-        });
-
-        console.log(`📱 Loaded ${rows.length} alerts from database`);
-        resolve();
-      });
-    });
-  }
-
-  private async loadSubscriptionsFromDatabase(): Promise<void> {
-    return new Promise((resolve, reject) => {
-      this.db.all(`
-        SELECT chat_id, update_interval 
-        FROM subscriptions
-      `, (err, rows: any[]) => {
-        if (err) {
-          reject(err);
-          return;
-        }
-
-        this.subscribedChats.clear();
-        this.userUpdateIntervals.clear();
-        
-        rows.forEach(row => {
-          this.subscribedChats.add(row.chat_id);
-          this.userUpdateIntervals.set(row.chat_id, row.update_interval);
-        });
-
-        console.log(`👥 Loaded ${rows.length} subscriptions from database`);
-        resolve();
-      });
-    });
-  }
-
-  private async saveAlert(alert: Alert): Promise<void> {
-    return new Promise((resolve, reject) => {
-      this.db.run(`
-        INSERT INTO alerts (chat_id, type, price, active)
-        VALUES (?, ?, ?, ?)
-      `, [alert.chatId, alert.type, alert.price, alert.active], function(err) {
-        if (err) {
-          reject(err);
-        } else {
-          resolve();
-        }
-      });
-    });
-  }
-
-  private async deleteAlert(chatId: number, alertIndex: number): Promise<void> {
-    const userAlerts = this.alerts.get(chatId) || [];
-    if (alertIndex < 0 || alertIndex >= userAlerts.length) return;
-
-    const alertToDelete = userAlerts[alertIndex];
-    
-    return new Promise((resolve, reject) => {
-      this.db.run(`
-        DELETE FROM alerts 
-        WHERE chat_id = ? AND type = ? AND price = ? AND active = 1
-        LIMIT 1
-      `, [chatId, alertToDelete.type, alertToDelete.price], function(err) {
-        if (err) {
-          reject(err);
-        } else {
-          resolve();
-        }
-      });
-    });
-  }
-
-  private async deleteAllAlerts(chatId: number): Promise<void> {
-    return new Promise((resolve, reject) => {
-      this.db.run(`
-        DELETE FROM alerts 
-        WHERE chat_id = ?
-      `, [chatId], function(err) {
-        if (err) {
-          reject(err);
-        } else {
-          resolve();
-        }
-      });
-    });
-  }
-
-  private async saveSubscription(chatId: number, interval: '15min' | '30min' | '1h' | '2h' = '1h'): Promise<void> {
-    return new Promise((resolve, reject) => {
-      this.db.run(`
-        INSERT OR REPLACE INTO subscriptions (chat_id, update_interval, updated_at)
-        VALUES (?, ?, CURRENT_TIMESTAMP)
-      `, [chatId, interval], function(err) {
-        if (err) {
-          reject(err);
-        } else {
-          resolve();
-        }
-      });
-    });
-  }
-
-  private async deleteSubscription(chatId: number): Promise<void> {
-    return new Promise((resolve, reject) => {
-      this.db.run(`
-        DELETE FROM subscriptions 
-        WHERE chat_id = ?
-      `, [chatId], function(err) {
-        if (err) {
-          reject(err);
-        } else {
-          resolve();
-        }
-      });
-    });
-  }
-
   private setupCommands(): void {
-    this.bot.onText(/\/start/, async (msg) => {
+    this.bot.onText(/\/start/, (msg) => {
       const chatId = msg.chat.id;
       this.subscribedChats.add(chatId);
-      await this.saveSubscription(chatId);
       
       this.bot.sendMessage(chatId, 
         '🚀 *Ethereum Bot Activated\\!*\n\n' +
@@ -267,12 +71,10 @@ class EthereumBot {
       );
     });
 
-    this.bot.onText(/\/stop/, async (msg) => {
+    this.bot.onText(/\/stop/, (msg) => {
       const chatId = msg.chat.id;
       this.subscribedChats.delete(chatId);
       this.alerts.delete(chatId);
-      await this.deleteSubscription(chatId);
-      await this.deleteAllAlerts(chatId);
       
       this.bot.sendMessage(chatId, '⏹️ Updates and alerts stopped\\. Use /start to reactivate\\.', { parse_mode: 'MarkdownV2' });
     });
@@ -317,7 +119,7 @@ class EthereumBot {
       }
     });
 
-    this.bot.onText(/\/setalert (.+)/, async (msg, match) => {
+    this.bot.onText(/\/setalert (.+)/, (msg, match) => {
       const chatId = msg.chat.id;
       const input = match![1].trim().toLowerCase();
       
@@ -344,12 +146,6 @@ class EthereumBot {
       userAlerts.push(newAlert);
       this.alerts.set(chatId, userAlerts);
       
-      try {
-        await this.saveAlert(newAlert);
-      } catch (error) {
-        console.error('Error saving alert to database:', error);
-      }
-      
       const escapeText = (text: string) => text.replace(/[_*[\]()~`>#+=|{}.!-]/g, '\\$&');
       const emoji = type === 'above' ? '📈' : '📉';
       this.bot.sendMessage(chatId, 
@@ -358,7 +154,7 @@ class EthereumBot {
       );
     });
 
-    this.bot.onText(/\/delalert (.+)/, async (msg, match) => {
+    this.bot.onText(/\/delalert (.+)/, (msg, match) => {
       const chatId = msg.chat.id;
       const alertNumber = parseInt(match![1]);
       const userAlerts = this.alerts.get(chatId) || [];
@@ -368,31 +164,20 @@ class EthereumBot {
         return;
       }
       
-      try {
-        await this.deleteAlert(chatId, alertNumber - 1);
-        userAlerts.splice(alertNumber - 1, 1);
-        
-        if (userAlerts.length === 0) {
-          this.alerts.delete(chatId);
-        } else {
-          this.alerts.set(chatId, userAlerts);
-        }
-      } catch (error) {
-        console.error('Error deleting alert from database:', error);
+      userAlerts.splice(alertNumber - 1, 1);
+      
+      if (userAlerts.length === 0) {
+        this.alerts.delete(chatId);
+      } else {
+        this.alerts.set(chatId, userAlerts);
       }
       
       this.bot.sendMessage(chatId, '🗑️ *Alert deleted*', { parse_mode: 'MarkdownV2' });
     });
 
-    this.bot.onText(/\/clearalerts/, async (msg) => {
+    this.bot.onText(/\/clearalerts/, (msg) => {
       const chatId = msg.chat.id;
       this.alerts.delete(chatId);
-      
-      try {
-        await this.deleteAllAlerts(chatId);
-      } catch (error) {
-        console.error('Error clearing alerts from database:', error);
-      }
       this.bot.sendMessage(chatId, '🗑️ All alerts deleted\\.', { parse_mode: 'MarkdownV2' });
     });
 
@@ -419,7 +204,7 @@ class EthereumBot {
       );
     });
 
-    this.bot.on('callback_query', async (callbackQuery) => {
+    this.bot.on('callback_query', (callbackQuery) => {
       const message = callbackQuery.message;
       const data = callbackQuery.data;
       const chatId = message!.chat.id;
@@ -427,12 +212,6 @@ class EthereumBot {
       if (data?.startsWith('interval_')) {
         const newInterval = data.replace('interval_', '') as '15min' | '30min' | '1h' | '2h';
         this.userUpdateIntervals.set(chatId, newInterval);
-        
-        try {
-          await this.saveSubscription(chatId, newInterval);
-        } catch (error) {
-          console.error('Error updating subscription interval:', error);
-        }
         
         this.bot.answerCallbackQuery(callbackQuery.id, { 
           text: `Frequency changed to ${this.getIntervalText(newInterval)}` 

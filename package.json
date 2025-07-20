@@ -21,11 +21,7 @@
     "node-cron": "^4.2.1",
     "node-telegram-bot-api": "^0.66.0",
     "nodemon": "^3.1.10",
-    "sqlite3": "^5.1.7",
     "ts-node": "^10.9.2",
     "typescript": "^5.8.3"
-  },
-  "devDependencies": {
-    "@types/sqlite3": "^5.1.0"
   }
 }

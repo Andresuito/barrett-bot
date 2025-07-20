@@ -2,8 +2,6 @@ import TelegramBot from 'node-telegram-bot-api';
 import axios from 'axios';
 import cron from 'node-cron';
 import dotenv from 'dotenv';
-import fs from 'fs';
-import path from 'path';
 
 dotenv.config();
 
@@ -32,12 +30,9 @@ class EthereumBot {
   private userUpdateIntervals: Map<number, '15min' | '30min' | '1h' | '2h'> = new Map();
   private priceHistory: PriceData[] = [];
   private scheduledJobs: Map<string, any> = new Map();
-  private readonly ALERTS_FILE = path.join(process.cwd(), 'data', 'alerts.json');
 
   constructor(token: string) {
     this.bot = new TelegramBot(token, { polling: true });
-    this.ensureDataDirectory();
-    this.loadAlerts();
     this.setupCommands();
     this.startPriceUpdates();
   }
@@ -151,7 +146,6 @@ class EthereumBot {
       const newAlert: Alert = { chatId, type, price, active: true };
       userAlerts.push(newAlert);
       this.alerts.set(chatId, userAlerts);
-      this.saveAlerts();
       
       const escapeText = (text: string) => text.replace(/[_*[\]()~`>#+=|{}.!-]/g, '\\$&');
       const emoji = type === 'above' ? '📈' : '📉';
@@ -178,7 +172,6 @@ class EthereumBot {
       } else {
         this.alerts.set(chatId, userAlerts);
       }
-      this.saveAlerts();
       
       this.bot.sendMessage(chatId, '🗑️ *Alert deleted*', { parse_mode: 'MarkdownV2' });
     });
@@ -186,7 +179,6 @@ class EthereumBot {
     this.bot.onText(/\/clearalerts/, (msg) => {
       const chatId = msg.chat.id;
       this.alerts.delete(chatId);
-      this.saveAlerts();
       this.bot.sendMessage(chatId, '🗑️ All alerts deleted\\.', { parse_mode: 'MarkdownV2' });
     });
 
@@ -332,7 +324,6 @@ class EthereumBot {
             } else {
               this.alerts.set(chatId, userAlerts);
             }
-            this.saveAlerts();
           } catch (error) {
             console.error(`Error sending alert to chat ${chatId}:`, error);
             this.subscribedChats.delete(chatId);
@@ -451,35 +442,6 @@ class EthereumBot {
       case '1h': return 'Every hour';
       case '2h': return 'Every 2 hours';
       default: return 'Every hour';
-    }
-  }
-
-  private ensureDataDirectory(): void {
-    const dataDir = path.join(process.cwd(), 'data');
-    if (!fs.existsSync(dataDir)) {
-      fs.mkdirSync(dataDir, { recursive: true });
-    }
-  }
-
-  private loadAlerts(): void {
-    try {
-      if (fs.existsSync(this.ALERTS_FILE)) {
-        const data = fs.readFileSync(this.ALERTS_FILE, 'utf8');
-        const alertsData = JSON.parse(data);
-        this.alerts = new Map(Object.entries(alertsData).map(([key, value]) => [parseInt(key), value as Alert[]]));
-        console.log(`📋 Loaded alerts for ${this.alerts.size} users`);
-      }
-    } catch (error) {
-      console.error('Error loading alerts:', error);
-    }
-  }
-
-  private saveAlerts(): void {
-    try {
-      const alertsObj = Object.fromEntries(this.alerts);
-      fs.writeFileSync(this.ALERTS_FILE, JSON.stringify(alertsObj, null, 2));
-    } catch (error) {
-      console.error('Error saving alerts:', error);
     }
   }
 

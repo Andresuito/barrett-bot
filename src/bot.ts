@@ -297,6 +297,10 @@ class EthereumBot {
   }
 
   private async checkAlerts(priceData: PriceData): Promise<void> {
+    if (this.alerts.size > 0) {
+      console.log(`Checking alerts for price: $${priceData.price.toLocaleString()}`);
+    }
+    
     for (const [chatId, userAlerts] of this.alerts.entries()) {
       for (let i = userAlerts.length - 1; i >= 0; i--) {
         const alert = userAlerts[i];
@@ -308,15 +312,19 @@ class EthereumBot {
         
         if (alert.type === 'above' && priceData.price >= alert.price) {
           shouldTrigger = true;
-          alertMessage = `🚨 *PRICE ALERT*\n\n📈 ETH is now *above* $${alert.price.toLocaleString()}\n💰 Current: $${priceData.price.toLocaleString()}`;
+          const escapeText = (text: string) => text.replace(/[_*[\]()~`>#+=|{}.!-]/g, '\\$&');
+          alertMessage = `🚨 *PRICE ALERT*\n\n📈 ETH is now *above* $${escapeText(alert.price.toLocaleString())}\n💰 Current: $${escapeText(priceData.price.toLocaleString())}`;
         } else if (alert.type === 'below' && priceData.price <= alert.price) {
           shouldTrigger = true;
-          alertMessage = `🚨 *PRICE ALERT*\n\n📉 ETH is now *below* $${alert.price.toLocaleString()}\n💰 Current: $${priceData.price.toLocaleString()}`;
+          const escapeText = (text: string) => text.replace(/[_*[\]()~`>#+=|{}.!-]/g, '\\$&');
+          alertMessage = `🚨 *PRICE ALERT*\n\n📉 ETH is now *below* $${escapeText(alert.price.toLocaleString())}\n💰 Current: $${escapeText(priceData.price.toLocaleString())}`;
         }
         
         if (shouldTrigger) {
+          console.log(`🚨 Alert triggered for chat ${chatId}: ${alert.type} $${alert.price}`);
           try {
             await this.bot.sendMessage(chatId, alertMessage, { parse_mode: 'MarkdownV2' });
+            console.log(`✅ Alert sent successfully to chat ${chatId}`);
             userAlerts.splice(i, 1);
             if (userAlerts.length === 0) {
               this.alerts.delete(chatId);
@@ -427,6 +435,7 @@ class EthereumBot {
   private async checkForExtremeMovements(): Promise<void> {
     try {
       const priceData = await this.getEthereumPrice();
+      await this.checkAlerts(priceData);
       await this.checkCrashAlerts(priceData);
       this.lastPrice = priceData.price;
     } catch (error) {

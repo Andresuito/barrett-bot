@@ -412,7 +412,8 @@ export class CommandHandlers {
       const keyboard = {
         inline_keyboard: [
           [
-            { text: '💰 Currency', callback_data: 'settings_currency' }
+            { text: '💰 Currency', callback_data: 'settings_currency' },
+            { text: '⏰ Update Frequency', callback_data: 'settings_interval' }
           ],
           [
             { text: '✅ Done', callback_data: 'settings_done' }
@@ -424,7 +425,8 @@ export class CommandHandlers {
       
       this.bot.sendMessage(chatId, 
         `⚙️ *USER SETTINGS*\n\n` +
-        `💰 *Currency:* ${currencySymbol} ${settings.currency.toUpperCase()}\n\n` +
+        `💰 *Currency:* ${currencySymbol} ${settings.currency.toUpperCase()}\n` +
+        `⏰ *Update Frequency:* ${this.getIntervalText(settings.updateInterval)}\n\n` +
         `Select what you want to change:`,
         { parse_mode: 'MarkdownV2', reply_markup: keyboard }
       );
@@ -457,6 +459,10 @@ export class CommandHandlers {
         await this.handleSettingsCallback(callbackQuery);
       } else if (data?.startsWith('curr_')) {
         await this.handleCurrencyCallback(callbackQuery);
+      } else if (data?.startsWith('interval_') && callbackQuery.message?.text?.includes('UPDATE FREQUENCY')) {
+        await this.handleIntervalFromSettings(callbackQuery);
+      } else if (data?.startsWith('crypto_')) {
+        await this.handleCryptoCallback(callbackQuery);
       }
     });
   }
@@ -489,6 +495,34 @@ export class CommandHandlers {
           reply_markup: keyboard
         }
       );
+    } else if (setting === 'interval') {
+      const keyboard = {
+        inline_keyboard: [
+          [
+            { text: '⚡ Every 15min', callback_data: 'interval_15min' },
+            { text: '🕐 Every 30min', callback_data: 'interval_30min' }
+          ],
+          [
+            { text: '⏰ Every hour', callback_data: 'interval_1h' },
+            { text: '🕑 Every 2 hours', callback_data: 'interval_2h' }
+          ],
+          [
+            { text: '← Back', callback_data: 'settings_back' }
+          ]
+        ]
+      };
+      
+      this.bot.editMessageText(
+        `⏰ *UPDATE FREQUENCY*\n\nChoose how often you want to receive price updates:`,
+        {
+          chat_id: chatId,
+          message_id: message!.message_id,
+          parse_mode: 'MarkdownV2',
+          reply_markup: keyboard
+        }
+      );
+    } else if (setting === 'cryptos') {
+      await this.showCryptoSettings(chatId, message!.message_id);
     } else if (setting === 'done') {
       try {
         await this.bot.deleteMessage(chatId, message!.message_id);
@@ -523,7 +557,8 @@ export class CommandHandlers {
     const keyboard = {
       inline_keyboard: [
         [
-          { text: '💰 Currency', callback_data: 'settings_currency' }
+          { text: '💰 Currency', callback_data: 'settings_currency' },
+          { text: '⏰ Update Frequency', callback_data: 'settings_interval' }
         ],
         [
           { text: '✅ Done', callback_data: 'settings_done' }
@@ -536,7 +571,8 @@ export class CommandHandlers {
     try {
       this.bot.editMessageText(
         `⚙️ *USER SETTINGS*\n\n` +
-        `💰 *Currency:* ${currencySymbol} ${settings.currency.toUpperCase()}\n\n` +
+        `💰 *Currency:* ${currencySymbol} ${settings.currency.toUpperCase()}\n` +
+        `⏰ *Update Frequency:* ${this.getIntervalText(settings.updateInterval)}\n\n` +
         `Select what you want to change:`,
         {
           chat_id: chatId,
@@ -549,6 +585,156 @@ export class CommandHandlers {
       if (error.code !== 'ETELEGRAM' || !error.response?.body?.description?.includes('message is not modified')) {
         console.error('Error editing settings message:', error);
       }
+    }
+  }
+
+  private async handleIntervalFromSettings(callbackQuery: TelegramBot.CallbackQuery): Promise<void> {
+    const message = callbackQuery.message;
+    const data = callbackQuery.data;
+    const chatId = message!.chat.id;
+    const newInterval = data?.replace('interval_', '') as UpdateInterval;
+    
+    await this.updateUserSettings(chatId, { updateInterval: newInterval });
+    
+    this.bot.answerCallbackQuery(callbackQuery.id, { 
+      text: `Frequency changed to ${this.getIntervalText(newInterval)}` 
+    });
+    
+    await this.showSettingsMenu(chatId, message!.message_id);
+  }
+
+  private async showCryptoSettings(chatId: number, messageId: number): Promise<void> {
+    const settings = await this.getUserSettings(chatId);
+    const escapeText = (text: string) => text.replace(/[_*[\]()~`>#+=|{}.!-]/g, '\\$&');
+    
+    let message = '🪙 *MANAGE TRACKED CRYPTOS*\n\n';
+    
+    if (settings.trackedCryptos.length === 0) {
+      message += 'No cryptocurrencies tracked\n\n';
+    } else {
+      message += '*Currently tracking:*\n';
+      settings.trackedCryptos.forEach((cryptoId, index) => {
+        const crypto = PriceService.findCryptoById(cryptoId);
+        if (crypto) {
+          message += `${index + 1}\\. ${escapeText(crypto.symbol)} \\- ${escapeText(crypto.name)}\n`;
+        }
+      });
+      message += '\n';
+    }
+    
+    // Available cryptos to add
+    const availableCryptos = PriceService.SUPPORTED_CRYPTOS.filter(
+      crypto => !settings.trackedCryptos.includes(crypto.id)
+    );
+    
+    const keyboard: any = { inline_keyboard: [] };
+    
+    // Remove buttons for tracked cryptos
+    if (settings.trackedCryptos.length > 0) {
+      const removeButtons = [];
+      for (let i = 0; i < settings.trackedCryptos.length; i += 2) {
+        const row = [];
+        const crypto1 = PriceService.findCryptoById(settings.trackedCryptos[i]);
+        if (crypto1) {
+          row.push({ text: `❌ ${crypto1.symbol}`, callback_data: `crypto_remove_${crypto1.id}` });
+        }
+        if (i + 1 < settings.trackedCryptos.length) {
+          const crypto2 = PriceService.findCryptoById(settings.trackedCryptos[i + 1]);
+          if (crypto2) {
+            row.push({ text: `❌ ${crypto2.symbol}`, callback_data: `crypto_remove_${crypto2.id}` });
+          }
+        }
+        removeButtons.push(row);
+      }
+      keyboard.inline_keyboard.push(...removeButtons);
+    }
+    
+    // Add buttons for available cryptos (if not at limit)
+    if (settings.trackedCryptos.length < 5 && availableCryptos.length > 0) {
+      keyboard.inline_keyboard.push([{ text: '➕ Add Crypto', callback_data: 'crypto_add_menu' }]);
+    }
+    
+    // Back button
+    keyboard.inline_keyboard.push([{ text: '← Back', callback_data: 'settings_back' }]);
+    
+    try {
+      this.bot.editMessageText(message, {
+        chat_id: chatId,
+        message_id: messageId,
+        parse_mode: 'MarkdownV2',
+        reply_markup: keyboard
+      });
+    } catch (error: any) {
+      console.error('Error editing crypto settings message:', error);
+    }
+  }
+
+  private async handleCryptoCallback(callbackQuery: TelegramBot.CallbackQuery): Promise<void> {
+    const message = callbackQuery.message;
+    const data = callbackQuery.data;
+    const chatId = message!.chat.id;
+    
+    if (data?.startsWith('crypto_remove_')) {
+      const cryptoId = data.replace('crypto_remove_', '');
+      const settings = await this.getUserSettings(chatId);
+      const newTrackedCryptos = settings.trackedCryptos.filter(id => id !== cryptoId);
+      await this.updateUserSettings(chatId, { trackedCryptos: newTrackedCryptos });
+      
+      const crypto = PriceService.findCryptoById(cryptoId);
+      this.bot.answerCallbackQuery(callbackQuery.id, { 
+        text: `${crypto?.symbol || 'Crypto'} removed` 
+      });
+      
+      await this.showCryptoSettings(chatId, message!.message_id);
+    } else if (data === 'crypto_add_menu') {
+      await this.showAddCryptoMenu(chatId, message!.message_id);
+    } else if (data?.startsWith('crypto_add_')) {
+      const cryptoId = data.replace('crypto_add_', '');
+      const settings = await this.getUserSettings(chatId);
+      const newTrackedCryptos = [...settings.trackedCryptos, cryptoId];
+      await this.updateUserSettings(chatId, { trackedCryptos: newTrackedCryptos });
+      
+      const crypto = PriceService.findCryptoById(cryptoId);
+      this.bot.answerCallbackQuery(callbackQuery.id, { 
+        text: `${crypto?.symbol || 'Crypto'} added` 
+      });
+      
+      await this.showCryptoSettings(chatId, message!.message_id);
+    }
+  }
+
+  private async showAddCryptoMenu(chatId: number, messageId: number): Promise<void> {
+    const settings = await this.getUserSettings(chatId);
+    const availableCryptos = PriceService.SUPPORTED_CRYPTOS.filter(
+      crypto => !settings.trackedCryptos.includes(crypto.id)
+    );
+    
+    let message = '➕ *ADD CRYPTOCURRENCY*\n\nSelect a cryptocurrency to add:';
+    
+    const keyboard: any = { inline_keyboard: [] };
+    
+    // Add buttons in rows of 2
+    for (let i = 0; i < availableCryptos.length; i += 2) {
+      const row = [];
+      row.push({ text: availableCryptos[i].symbol, callback_data: `crypto_add_${availableCryptos[i].id}` });
+      if (i + 1 < availableCryptos.length) {
+        row.push({ text: availableCryptos[i + 1].symbol, callback_data: `crypto_add_${availableCryptos[i + 1].id}` });
+      }
+      keyboard.inline_keyboard.push(row);
+    }
+    
+    // Back button
+    keyboard.inline_keyboard.push([{ text: '← Back', callback_data: 'settings_cryptos' }]);
+    
+    try {
+      this.bot.editMessageText(message, {
+        chat_id: chatId,
+        message_id: messageId,
+        parse_mode: 'MarkdownV2',
+        reply_markup: keyboard
+      });
+    } catch (error: any) {
+      console.error('Error editing add crypto menu:', error);
     }
   }
 

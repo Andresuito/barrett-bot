@@ -64,6 +64,7 @@ class BarrettBot {
     try {
       const settingsDocs = await UserSettingsModel.find({});
       this.userSettings.clear();
+      this.subscribedChats.clear();
       
       settingsDocs.forEach((settingsDoc: IUserSettings) => {
         this.userSettings.set(settingsDoc.chatId, {
@@ -72,10 +73,11 @@ class BarrettBot {
           updateInterval: settingsDoc.updateInterval || '1h',
           emergencyAlerts: settingsDoc.emergencyAlerts ?? true,
           emergencyThreshold: settingsDoc.emergencyThreshold || 10
-        });
+        });s
+        this.subscribedChats.add(settingsDoc.chatId);
       });
       
-      console.log(`✅ ${settingsDocs.length} settings loaded`);
+      console.log(`✅ ${settingsDocs.length} settings loaded, ${this.subscribedChats.size} chats subscribed`);
     } catch (error) {
       console.error('❌ Error loading user settings from database:', error);
     }
@@ -85,7 +87,7 @@ class BarrettBot {
     let settings = this.userSettings.get(chatId);
     
     if (!settings) {
-      // Create default settings for new user
+
       settings = { 
         currency: 'usd',
         trackedCryptos: ['ethereum'],
@@ -187,12 +189,11 @@ class BarrettBot {
           }
 
           if (shouldAlert) {
-            // Prevent spam - only alert once per hour per crypto per user
             const alertKey = `${chatId}-${crypto.id}-${alertType}`;
             const now = Date.now();
             const lastAlert = this.recentEmergencyAlerts.get(alertKey);
             
-            if (lastAlert && (now - lastAlert) < 3600000) { // 1 hour cooldown
+            if (lastAlert && (now - lastAlert) < 3600000) { 
               continue;
             }
             
@@ -329,14 +330,12 @@ class BarrettBot {
     if (targetChats.length === 0) return;
 
     try {
-      // Get all unique cryptos for target chats + cryptos with active alerts
       const allTrackedCryptos = new Set<string>();
       for (const chatId of targetChats) {
         const settings = await this.getUserSettings(chatId);
         settings.trackedCryptos.forEach(crypto => allTrackedCryptos.add(crypto));
       }
       
-      // Add cryptos that have active alerts
       for (const userAlerts of this.alerts.values()) {
         userAlerts.forEach(alert => {
           if (alert.active) {

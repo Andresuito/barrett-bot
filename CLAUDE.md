@@ -11,55 +11,83 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Architecture
 
-This is a TypeScript-based Telegram bot that provides Ethereum price tracking and alerts. The bot is implemented as a single class `EthereumBot` in `src/bot.ts`.
+This is a modular TypeScript-based Telegram bot that provides Ethereum price tracking and alerts with MongoDB persistence.
 
 ### Core Components
 
-- **EthereumBot Class**: Main bot implementation with command handlers and price monitoring
-- **Price Data Management**: Fetches from CoinGecko API, stores historical data in memory
-- **Alert System**: User-configurable price alerts with threshold notifications
-- **Subscription System**: Users can subscribe/unsubscribe to automated updates
-- **Cron Scheduling**: Automated price updates using node-cron
+- **EthereumBot Class** (`src/bot.ts`): Main bot orchestrator with initialization and scheduling
+- **CommandHandlers** (`src/handlers/CommandHandlers.ts`): All bot command implementations
+- **Database Models** (`src/models/`): MongoDB schemas for alerts and user settings
+- **Services** (`src/services/`): Business logic for price fetching and alert processing
+- **Interfaces** (`src/interfaces/`): TypeScript type definitions
+- **Utils** (`src/utils/`): Message formatting utilities
+
+### Architecture Pattern
+
+The project follows a clean, modular architecture:
+- **Database Layer**: MongoDB with Mongoose for data persistence
+- **Service Layer**: PriceService (API calls), AlertService (alert logic)
+- **Handler Layer**: CommandHandlers for bot interactions
+- **Core Layer**: EthereumBot orchestrates all components
 
 ### Key Features
 
-- Real-time Ethereum price tracking
-- Customizable update intervals (15min, 30min, hourly)
-- Price alerts (above/below thresholds)
-- Portfolio calculations
-- Price predictions based on historical trends
-- Detailed market statistics
-- Multi-language support (Spanish)
+- Real-time Ethereum price tracking with MongoDB persistence
+- Customizable update intervals (15min, 30min, 1h, 2h)
+- Price alerts (above/below thresholds) with database storage
+- Crash detection alerts for extreme price movements
+- User settings persistence (currency preferences)
+- Multi-currency support (USD/EUR)
+- Automatic cleanup of invalid chat IDs
 
 ### Dependencies
 
 - `node-telegram-bot-api` - Telegram Bot API wrapper
+- `mongoose` - MongoDB object modeling
 - `axios` - HTTP client for API calls
-- `node-cron` - Scheduled tasks
+- `node-cron` - Scheduled tasks and job management
 - `dotenv` - Environment variable management
+- `ts-node` & `typescript` - TypeScript runtime and compiler
+- `nodemon` - Development file watching
 
 ### Environment Setup
 
-Requires `TELEGRAM_BOT_TOKEN` in `.env` file (not committed to repo).
+Requires environment variables:
+- `TELEGRAM_BOT_TOKEN` - Bot token from BotFather
+- MongoDB connection string (configured in `src/database.ts`)
 
-### Bot Commands Architecture
+### Database Schema
 
-Commands are organized into categories:
-- Price information: `/price`, `/stats`, `/history`
-- Alerts: `/alerts`, `/setalert`, `/clearalerts`
-- Tools: `/portfolio`, `/convert`, `/prediction`
-- Configuration: `/interval`, `/status`, `/start`, `/stop`
+- **Alerts**: chatId, type (above/below), price threshold, active status
+- **UserSettings**: chatId, currency preference (usd/eur)
+
+### Bot Commands Structure
+
+Commands are handled in `src/handlers/CommandHandlers.ts`:
+- **Core**: `/start`, `/stop`, `/help`
+- **Price Info**: `/price`, real-time updates
+- **Alerts**: `/setalert`, `/alerts`, `/clearalerts`
+- **Settings**: Currency and interval configuration
 
 ### Data Flow
 
-1. Bot fetches price data from CoinGecko API
-2. Data is formatted and stored in memory (`priceHistory`)
-3. Scheduled updates broadcast to subscribed chats
-4. Alert system checks thresholds and notifies users
-5. All messages use MarkdownV2 formatting for Telegram
+1. Bot initializes, connects to MongoDB, loads persisted data
+2. Multiple cron jobs run for different update intervals
+3. PriceService fetches data from CoinGecko API
+4. AlertService checks thresholds and triggers notifications
+5. MessageFormatter creates MarkdownV2-formatted responses
+6. Invalid chats are automatically cleaned from subscriptions
 
-### Error Handling
+### Error Handling & Resilience
 
-- API failures are caught and user-friendly messages sent
-- Invalid chat IDs are automatically removed from subscriptions
-- Process-level error handlers for unhandled rejections/exceptions
+- Database connection errors with graceful degradation
+- API failures with user-friendly error messages
+- Automatic chat cleanup for invalid/blocked users
+- Process-level handlers for unhandled exceptions
+- Job scheduling with error isolation per interval
+
+### Cron Schedule
+
+- Price updates: 15min, 30min, 1h, 2h intervals
+- Extreme movement checks: Every 5 minutes
+- Users can customize their update frequency

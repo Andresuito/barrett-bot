@@ -2,6 +2,7 @@ import TelegramBot from 'node-telegram-bot-api';
 import { Alert, UpdateInterval, UserSettings, PriceData, CryptoCurrency } from '../interfaces';
 import { Alert as AlertModel } from '../models/Alert';
 import { PriceService } from '../services';
+import { MessageFormatter } from '../utils';
 
 export class CommandHandlers {
   private bot: TelegramBot;
@@ -74,7 +75,7 @@ export class CommandHandlers {
         '/price \\[symbol\\] \\- Single crypto price \\(e\\.g\\. /price BTC\\)\n\n' +
         '*🔔 Alerts:*\n' +
         '/alerts \\- Manage price alerts\n' +
-        '/setalert \\[price\\] \\- Create ETH alert \\(e\\.g\\. /setalert 3000\\)\n' +
+        '/setalert \\[crypto\\] \\[price\\] \\- Create alert \\(e\\.g\\. /setalert BTC 50000\\)\n' +
         '/clearalerts \\- Delete all alerts\n\n' +
         '*⚙️ Settings \\& Management:*\n' +
         '/settings \\- All settings \\(currency\\, frequency\\, tracked cryptos\\)\n' +
@@ -139,7 +140,6 @@ export class CommandHandlers {
       const chatId = msg.chat.id;
       const settings = await this.getUserSettings(chatId);
       
-      const escapeText = (text: string) => text.replace(/[_*[\]()~`>#+=|{}.!-]/g, '\\$&');
       let message = '🪙 *YOUR TRACKED CRYPTOCURRENCIES*\n\n';
       
       if (settings.trackedCryptos.length === 0) {
@@ -148,7 +148,7 @@ export class CommandHandlers {
         settings.trackedCryptos.forEach((cryptoId, index) => {
           const crypto = PriceService.findCryptoById(cryptoId);
           if (crypto) {
-            message += `${index + 1}\\. ${crypto.emoji} ${escapeText(crypto.symbol)} \\- ${escapeText(crypto.name)}\n`;
+            message += `${index + 1}\\. ${crypto.emoji} ${MessageFormatter.escapeMarkdown(crypto.symbol)} \\- ${MessageFormatter.escapeMarkdown(crypto.name)}\n`;
           }
         });
         message += '\n';
@@ -195,9 +195,8 @@ export class CommandHandlers {
       const newTrackedCryptos = [...settings.trackedCryptos, crypto.id];
       await this.updateUserSettings(chatId, { trackedCryptos: newTrackedCryptos });
       
-      const escapeText = (text: string) => text.replace(/[_*[\]()~`>#+=|{}.!-]/g, '\\$&');
       this.bot.sendMessage(chatId, 
-        `✅ *${escapeText(crypto.symbol)}* \\(${escapeText(crypto.name)}\\) added to tracking\\!`, 
+        `✅ *${MessageFormatter.escapeMarkdown(crypto.symbol)}* \\(${MessageFormatter.escapeMarkdown(crypto.name)}\\) added to tracking\\!`, 
         { parse_mode: 'MarkdownV2' }
       );
     });
@@ -228,9 +227,8 @@ export class CommandHandlers {
       const newTrackedCryptos = settings.trackedCryptos.filter(id => id !== crypto.id);
       await this.updateUserSettings(chatId, { trackedCryptos: newTrackedCryptos });
       
-      const escapeText = (text: string) => text.replace(/[_*[\]()~`>#+=|{}.!-]/g, '\\$&');
       this.bot.sendMessage(chatId, 
-        `🗑️ *${escapeText(crypto.symbol)}* removed from tracking\\.`, 
+        `🗑️ *${MessageFormatter.escapeMarkdown(crypto.symbol)}* removed from tracking\\.`, 
         { parse_mode: 'MarkdownV2' }
       );
     });
@@ -238,11 +236,10 @@ export class CommandHandlers {
     this.bot.onText(/\/list/, (msg) => {
       const chatId = msg.chat.id;
       
-      const escapeText = (text: string) => text.replace(/[_*[\]()~`>#+=|{}.!-]/g, '\\$&');
       let message = '📋 *AVAILABLE CRYPTOCURRENCIES*\n\n';
       
       PriceService.SUPPORTED_CRYPTOS.forEach((crypto, index) => {
-        message += `${crypto.emoji} ${escapeText(crypto.symbol)} \\- ${escapeText(crypto.name)}\n`;
+        message += `${crypto.emoji} ${MessageFormatter.escapeMarkdown(crypto.symbol)} \\- ${MessageFormatter.escapeMarkdown(crypto.name)}\n`;
       });
       
       message += '\n*Usage:* /add \\[SYMBOL\\] to start tracking';
@@ -261,17 +258,18 @@ export class CommandHandlers {
           '🔔 *PRICE ALERTS*\n\n' +
           'No active alerts\\.\n\n' +
           '*Create new alert:*\n' +
-          '/setalert 3000 \\- Alert when ETH reaches $3000\n' +
-          '/setalert below 2500 \\- Alert when drops below $2500',
+          '/setalert BTC 50000 \\- Alert when BTC reaches $50000\n' +
+          '/setalert ETH below 2500 \\- Alert when ETH drops below $2500',
           { parse_mode: 'MarkdownV2' }
         );
       } else {
-        const escapeText = (text: string) => text.replace(/[_*[\]()~`>#+=|{}.!-]/g, '\\$&');
-        let message = '🔔 *YOUR ACTIVE ALERTS*\n\n';
+          let message = '🔔 *YOUR ACTIVE ALERTS*\n\n';
         
         userAlerts.forEach((alert, index) => {
           const status = alert.active ? '✅' : '❌';
-          message += `${index + 1}\\. ${status} ${alert.type === 'above' ? '📈' : '📉'} ${escapeText(alert.price.toLocaleString())}\n`;
+          const crypto = PriceService.findCryptoById(alert.cryptoId);
+          const cryptoName = crypto ? crypto.symbol : alert.cryptoId.toUpperCase();
+          message += `${index + 1}\\. ${status} ${crypto?.emoji || '🪙'} ${cryptoName} ${alert.type === 'above' ? '📈' : '📉'} ${MessageFormatter.escapeMarkdown(alert.price.toLocaleString())}\n`;
         });
         
         message += '\n/delalert \\[number\\] \\- Delete specific alert\n/clearalerts \\- Delete all';
@@ -282,48 +280,65 @@ export class CommandHandlers {
 
     this.bot.onText(/\/setalert (.+)/, async (msg, match) => {
       const chatId = msg.chat.id;
-      const input = match![1].trim().toLowerCase();
+      const input = match![1].trim();
       
+      const parts = input.split(/\s+/);
+      if (parts.length < 2) {
+        this.bot.sendMessage(chatId, '❌ Invalid format\\. Examples:\n/setalert BTC 50000\n/setalert ETH below 2500', { parse_mode: 'MarkdownV2' });
+        return;
+      }
+      
+      const cryptoSymbol = parts[0].toUpperCase();
+      const crypto = PriceService.findCryptoBySymbol(cryptoSymbol);
+      
+      if (!crypto) {
+        this.bot.sendMessage(chatId, 
+          `❌ Cryptocurrency *${cryptoSymbol}* not found\\.\n\nUse /list to see available cryptocurrencies\\.`, 
+          { parse_mode: 'MarkdownV2' }
+        );
+        return;
+      }
+      
+      const restInput = parts.slice(1).join(' ').toLowerCase();
       let price: number;
       let type: 'above' | 'below' = 'above';
       
-      if (input.includes('below')) {
+      if (restInput.includes('below')) {
         type = 'below';
-        price = parseFloat(input.replace(/below/g, '').trim());
-      } else if (input.includes('above')) {
+        price = parseFloat(restInput.replace(/below/g, '').trim());
+      } else if (restInput.includes('above')) {
         type = 'above';
-        price = parseFloat(input.replace(/above/g, '').trim());
+        price = parseFloat(restInput.replace(/above/g, '').trim());
       } else {
-        price = parseFloat(input);
+        price = parseFloat(restInput);
       }
       
       if (isNaN(price) || price <= 0) {
-        this.bot.sendMessage(chatId, '❌ Invalid price\\. Examples:\n/setalert 3000\n/setalert below 2500', { parse_mode: 'MarkdownV2' });
+        this.bot.sendMessage(chatId, '❌ Invalid price\\. Examples:\n/setalert BTC 50000\n/setalert ETH below 2500', { parse_mode: 'MarkdownV2' });
         return;
       }
       
       const userAlerts = this.alerts.get(chatId) || [];
       
-      if (userAlerts.length >= 3) {
-        this.bot.sendMessage(chatId, '❌ Maximum 3 alerts allowed\\. Delete some alerts first with /delalert or /clearalerts', { parse_mode: 'MarkdownV2' });
+      if (userAlerts.length >= 5) {
+        this.bot.sendMessage(chatId, '❌ Maximum 5 alerts allowed\\. Delete some alerts first with /delalert or /clearalerts', { parse_mode: 'MarkdownV2' });
         return;
       }
       
-      const newAlert: Alert = { chatId, cryptoId: 'ethereum', type, price, active: true };
+      const newAlert: Alert = { chatId, cryptoId: crypto.id, type, price, active: true };
       userAlerts.push(newAlert);
       this.alerts.set(chatId, userAlerts);
       
       try {
-        await AlertModel.create({ chatId, cryptoId: 'ethereum', type, price, active: true });
-        console.log(`✅ Alert saved to database for chat ${chatId}`);
+        await AlertModel.create({ chatId, cryptoId: crypto.id, type, price, active: true });
+        console.log(`✅ Alert saved: ${chatId}`);
       } catch (error) {
         console.error('❌ Error saving alert to database:', error);
       }
       
-      const escapeText = (text: string) => text.replace(/[_*[\]()~`>#+=|{}.!-]/g, '\\$&');
       const emoji = type === 'above' ? '📈' : '📉';
       this.bot.sendMessage(chatId, 
-        `✅ *Alert created*\n\n${emoji} I'll notify you when ETH is *${type === 'above' ? 'above' : 'below'}* *${escapeText(price.toLocaleString())}*`,
+        `✅ *Alert created*\n\n${emoji} I'll notify you when *${MessageFormatter.escapeMarkdown(crypto.symbol)}* is *${type === 'above' ? 'above' : 'below'}* *${MessageFormatter.escapeMarkdown(price.toLocaleString())}*`,
         { parse_mode: 'MarkdownV2' }
       );
     });
@@ -352,9 +367,10 @@ export class CommandHandlers {
           chatId: alertToDelete.chatId, 
           type: alertToDelete.type, 
           price: alertToDelete.price,
+          cryptoId: alertToDelete.cryptoId,
           active: true 
         });
-        console.log(`✅ Alert deleted from database for chat ${chatId}`);
+        console.log(`✅ Alert deleted: ${chatId}`);
       } catch (error) {
         console.error('❌ Error deleting alert from database:', error);
       }
@@ -368,7 +384,7 @@ export class CommandHandlers {
       
       try {
         await AlertModel.deleteMany({ chatId, active: true });
-        console.log(`✅ All alerts deleted from database for chat ${chatId}`);
+        console.log(`✅ Alerts cleared: ${chatId}`);
       } catch (error) {
         console.error('❌ Error clearing alerts from database:', error);
       }
@@ -415,6 +431,9 @@ export class CommandHandlers {
             { text: '🪙 Tracked Cryptos', callback_data: 'settings_cryptos' }
           ],
           [
+            { text: '🚨 Emergency Alerts', callback_data: 'settings_emergency' }
+          ],
+          [
             { text: '✅ Done', callback_data: 'settings_done' }
           ]
         ]
@@ -422,28 +441,31 @@ export class CommandHandlers {
       
       const currencySymbol = settings.currency === 'usd' ? '$' : '€';
       
-      const escapeText = (text: string) => text.replace(/[_*[\]()~`>#+=|{}.!-]/g, '\\$&');
       let trackedCryptosText = '';
       if (settings.trackedCryptos.length > 0) {
         const trackedNames = settings.trackedCryptos.map(cryptoId => {
           const crypto = PriceService.findCryptoById(cryptoId);
           return crypto ? `${crypto.emoji} ${crypto.symbol}` : cryptoId;
         }).join(' ');
-        trackedCryptosText = `🪙 *Tracked Cryptos:* ${escapeText(trackedNames)}\n`;
+        trackedCryptosText = `🪙 *Tracked Cryptos:* ${MessageFormatter.escapeMarkdown(trackedNames)}\n`;
       } else {
         trackedCryptosText = `🪙 *Tracked Cryptos:* None selected\n`;
       }
+      
+      const emergencyStatus = settings.emergencyAlerts ? `ON \\(${settings.emergencyThreshold}%\\)` : 'OFF';
       
       this.bot.sendMessage(chatId, 
         `⚙️ *USER SETTINGS*\n\n` +
         `💰 *Currency:* ${currencySymbol} ${settings.currency.toUpperCase()}\n` +
         `⏰ *Update Frequency:* ${this.getIntervalText(settings.updateInterval)}\n` +
+        `🚨 *Emergency Alerts:* ${emergencyStatus}\n` +
         trackedCryptosText + `\n` +
         `Select what you want to change:`,
         { parse_mode: 'MarkdownV2', reply_markup: keyboard }
       );
     });
   }
+
 
   private setupCallbackHandlers(): void {
     this.bot.on('callback_query', async (callbackQuery) => {
@@ -475,6 +497,8 @@ export class CommandHandlers {
         await this.handleIntervalFromSettings(callbackQuery);
       } else if (data?.startsWith('crypto_')) {
         await this.handleCryptoCallback(callbackQuery);
+      } else if (data?.startsWith('emergency_')) {
+        await this.handleEmergencyCallback(callbackQuery);
       }
     });
   }
@@ -535,6 +559,8 @@ export class CommandHandlers {
       );
     } else if (setting === 'cryptos') {
       await this.showCryptoSettings(chatId, message!.message_id);
+    } else if (setting === 'emergency') {
+      await this.showEmergencySettings(chatId, message!.message_id);
     } else if (setting === 'done') {
       try {
         await this.bot.deleteMessage(chatId, message!.message_id);
@@ -576,6 +602,9 @@ export class CommandHandlers {
           { text: '🪙 Tracked Cryptos', callback_data: 'settings_cryptos' }
         ],
         [
+          { text: '🚨 Emergency Alerts', callback_data: 'settings_emergency' }
+        ],
+        [
           { text: '✅ Done', callback_data: 'settings_done' }
         ]
       ]
@@ -583,23 +612,25 @@ export class CommandHandlers {
     
     const currencySymbol = settings.currency === 'usd' ? '$' : '€';
     
-    const escapeText = (text: string) => text.replace(/[_*[\]()~`>#+=|{}.!-]/g, '\\$&');
     let trackedCryptosText = '';
     if (settings.trackedCryptos.length > 0) {
       const trackedNames = settings.trackedCryptos.map(cryptoId => {
         const crypto = PriceService.findCryptoById(cryptoId);
         return crypto ? `${crypto.emoji} ${crypto.symbol}` : cryptoId;
       }).join(' ');
-      trackedCryptosText = `🪙 *Tracked Cryptos:* ${escapeText(trackedNames)}\n`;
+      trackedCryptosText = `🪙 *Tracked Cryptos:* ${MessageFormatter.escapeMarkdown(trackedNames)}\n`;
     } else {
       trackedCryptosText = `🪙 *Tracked Cryptos:* None selected\n`;
     }
+    
+    const emergencyStatus = settings.emergencyAlerts ? `ON \\(${settings.emergencyThreshold}%\\)` : 'OFF';
     
     try {
       this.bot.editMessageText(
         `⚙️ *USER SETTINGS*\n\n` +
         `💰 *Currency:* ${currencySymbol} ${settings.currency.toUpperCase()}\n` +
         `⏰ *Update Frequency:* ${this.getIntervalText(settings.updateInterval)}\n` +
+        `🚨 *Emergency Alerts:* ${emergencyStatus}\n` +
         trackedCryptosText + `\n` +
         `Select what you want to change:`,
         {
@@ -633,7 +664,6 @@ export class CommandHandlers {
 
   private async showCryptoSettings(chatId: number, messageId: number): Promise<void> {
     const settings = await this.getUserSettings(chatId);
-    const escapeText = (text: string) => text.replace(/[_*[\]()~`>#+=|{}.!-]/g, '\\$&');
     
     let message = '🪙 *MANAGE TRACKED CRYPTOS*\n\n';
     
@@ -644,7 +674,7 @@ export class CommandHandlers {
       settings.trackedCryptos.forEach((cryptoId, index) => {
         const crypto = PriceService.findCryptoById(cryptoId);
         if (crypto) {
-          message += `${index + 1}\\. ${crypto.emoji} ${escapeText(crypto.symbol)} \\- ${escapeText(crypto.name)}\n`;
+          message += `${index + 1}\\. ${crypto.emoji} ${MessageFormatter.escapeMarkdown(crypto.symbol)} \\- ${MessageFormatter.escapeMarkdown(crypto.name)}\n`;
         }
       });
       message += '\n';
@@ -763,6 +793,86 @@ export class CommandHandlers {
       });
     } catch (error: any) {
       console.error('Error editing add crypto menu:', error);
+    }
+  }
+
+  private async showEmergencySettings(chatId: number, messageId: number): Promise<void> {
+    const settings = await this.getUserSettings(chatId);
+    
+    let message = '🚨 *EMERGENCY ALERT SETTINGS*\n\n';
+    
+    if (settings.emergencyAlerts) {
+      message += `Status: *ON*\n`;
+      message += `Threshold: *${settings.emergencyThreshold}%* drop triggers crash alert\n`;
+      message += `Pump Alert: *${Math.round(settings.emergencyThreshold * 1.5)}%* gain triggers pump alert\n`;
+      message += `Extreme: *20%* triggers volatility alert\n\n`;
+    } else {
+      message += `Status: *OFF*\n\n`;
+    }
+    
+    message += '*Emergency alerts notify you when your tracked cryptos experience:*\n';
+    message += `💥 Crash: ${settings.emergencyThreshold}%\\+ drop\n`;
+    message += `🚀 Pump: ${Math.round(settings.emergencyThreshold * 1.5)}%\\+ gain\n`;
+    message += `📈📉 Extreme: 20%\\+ volatility`;
+    
+    const keyboard = {
+      inline_keyboard: [
+        [
+          { text: settings.emergencyAlerts ? '❌ Turn OFF' : '✅ Turn ON', 
+            callback_data: `emergency_toggle_${settings.emergencyAlerts ? 'off' : 'on'}` }
+        ],
+        ...(settings.emergencyAlerts ? [
+          [
+            { text: '📉 5%', callback_data: 'emergency_threshold_5' },
+            { text: '📉 10%', callback_data: 'emergency_threshold_10' },
+            { text: '📉 15%', callback_data: 'emergency_threshold_15' }
+          ],
+          [
+            { text: '📉 20%', callback_data: 'emergency_threshold_20' },
+            { text: '📉 25%', callback_data: 'emergency_threshold_25' }
+          ]
+        ] : []),
+        [
+          { text: '← Back', callback_data: 'settings_back' }
+        ]
+      ]
+    };
+    
+    try {
+      this.bot.editMessageText(message, {
+        chat_id: chatId,
+        message_id: messageId,
+        parse_mode: 'MarkdownV2',
+        reply_markup: keyboard
+      });
+    } catch (error: any) {
+      console.error('Error editing emergency settings message:', error);
+    }
+  }
+
+  private async handleEmergencyCallback(callbackQuery: TelegramBot.CallbackQuery): Promise<void> {
+    const message = callbackQuery.message;
+    const data = callbackQuery.data;
+    const chatId = message!.chat.id;
+    
+    if (data?.startsWith('emergency_toggle_')) {
+      const newState = data.replace('emergency_toggle_', '') === 'on';
+      await this.updateUserSettings(chatId, { emergencyAlerts: newState });
+      
+      this.bot.answerCallbackQuery(callbackQuery.id, { 
+        text: `Emergency alerts ${newState ? 'enabled' : 'disabled'}` 
+      });
+      
+      await this.showSettingsMenu(chatId, message!.message_id);
+    } else if (data?.startsWith('emergency_threshold_')) {
+      const threshold = parseInt(data.replace('emergency_threshold_', ''));
+      await this.updateUserSettings(chatId, { emergencyThreshold: threshold });
+      
+      this.bot.answerCallbackQuery(callbackQuery.id, { 
+        text: `Threshold set to ${threshold}%` 
+      });
+      
+      await this.showEmergencySettings(chatId, message!.message_id);
     }
   }
 

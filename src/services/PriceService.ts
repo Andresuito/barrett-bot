@@ -3,7 +3,6 @@ import { PriceData, CryptoCurrency } from '../interfaces';
 
 export class PriceService {
   private static readonly BASE_API_URL = 'https://api.coingecko.com/api/v3';
-  
   static readonly SUPPORTED_CRYPTOS: CryptoCurrency[] = [
     { id: 'ethereum', symbol: 'ETH', name: 'Ethereum', emoji: '🔷' },
     { id: 'bitcoin', symbol: 'BTC', name: 'Bitcoin', emoji: '₿' },
@@ -54,18 +53,6 @@ export class PriceService {
     }
   }
 
-  static async getSingleCryptoPrice(cryptoId: string): Promise<PriceData> {
-    const prices = await this.getCryptoPrices([cryptoId]);
-    if (prices.length === 0) {
-      throw new Error(`Price data not found for ${cryptoId}`);
-    }
-    return prices[0];
-  }
-
-  // Backward compatibility
-  static async getEthereumPrice(): Promise<PriceData> {
-    return this.getSingleCryptoPrice('ethereum');
-  }
 
   static findCryptoBySymbol(symbol: string): CryptoCurrency | undefined {
     return this.SUPPORTED_CRYPTOS.find(

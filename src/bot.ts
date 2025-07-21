@@ -17,9 +17,8 @@ class BarrettBot {
   private alerts: Map<number, Alert[]> = new Map();
   private userSettings: Map<number, UserSettings> = new Map();
   private commandHandlers!: CommandHandlers;
-  private priceHistory: Map<string, PriceData[]> = new Map();
   private scheduledJobs: Map<string, any> = new Map();
-  
+  private recentEmergencyAlerts: Map<string, number> = new Map();
 
   constructor(token: string) {
     this.bot = new TelegramBot(token, { polling: true });
@@ -55,7 +54,7 @@ class BarrettBot {
         this.alerts.set(alertDoc.chatId, userAlerts);
       });
       
-      console.log(`✅ Loaded ${alertDocs.length} alerts from database`);
+      console.log(`✅ ${alertDocs.length} alerts loaded`);
     } catch (error) {
       console.error('❌ Error loading alerts from database:', error);
     }
@@ -70,11 +69,13 @@ class BarrettBot {
         this.userSettings.set(settingsDoc.chatId, {
           currency: settingsDoc.currency,
           trackedCryptos: settingsDoc.trackedCryptos || ['ethereum'],
-          updateInterval: settingsDoc.updateInterval || '1h'
+          updateInterval: settingsDoc.updateInterval || '1h',
+          emergencyAlerts: settingsDoc.emergencyAlerts ?? true,
+          emergencyThreshold: settingsDoc.emergencyThreshold || 10
         });
       });
       
-      console.log(`✅ Loaded ${settingsDocs.length} user settings from database`);
+      console.log(`✅ ${settingsDocs.length} settings loaded`);
     } catch (error) {
       console.error('❌ Error loading user settings from database:', error);
     }
@@ -88,7 +89,9 @@ class BarrettBot {
       settings = { 
         currency: 'usd',
         trackedCryptos: ['ethereum'],
-        updateInterval: '1h'
+        updateInterval: '1h',
+        emergencyAlerts: true,
+        emergencyThreshold: 10
       };
       try {
         await UserSettingsModel.findOneAndUpdate(
@@ -97,7 +100,7 @@ class BarrettBot {
           { upsert: true, new: true }
         );
         this.userSettings.set(chatId, settings);
-        console.log(`✅ Created default settings for chat ${chatId}`);
+        console.log(`✅ Default settings: ${chatId}`);
       } catch (error) {
         console.error('❌ Error creating default user settings:', error);
       }
@@ -118,7 +121,7 @@ class BarrettBot {
       );
       
       this.userSettings.set(chatId, newSettings);
-      console.log(`✅ Updated settings for chat ${chatId}:`, updates);
+      console.log(`✅ Settings: ${chatId}`);
     } catch (error) {
       console.error('❌ Error updating user settings:', error);
     }
@@ -147,18 +150,134 @@ class BarrettBot {
   }
 
 
-  private async checkCrashAlerts(pricesData: PriceData[]): Promise<void> {
-    // Simplified crash alert system - can be enhanced later
-    for (const priceData of pricesData) {
-      if (Math.abs(priceData.change24hUsd) > 15) { // Alert on 15%+ moves
-        const alertMessage = `🚨 *EXTREME MOVEMENT ALERT*\n\n${priceData.name} \\(${priceData.symbol}\\) moved ${priceData.change24hUsd > 0 ? '📈' : '📉'} ${Math.abs(priceData.change24hUsd).toFixed(2)}% in 24h\\!`;
+  private async checkEmergencyAlerts(pricesData: PriceData[]): Promise<void> {
+    if (this.subscribedChats.size === 0) return;
+
+    for (const chatId of this.subscribedChats) {
+      try {
+        const settings = await this.getUserSettings(chatId);
         
-        for (const chatId of this.subscribedChats) {
-          try {
-            await this.bot.sendMessage(chatId, alertMessage, { parse_mode: 'MarkdownV2' });
-          } catch (error) {
-            console.error(`Error sending crash alert to chat ${chatId}:`, error);
+        if (!settings.emergencyAlerts) continue;
+
+        for (const priceData of pricesData) {
+          const crypto = PriceService.findCryptoBySymbol(priceData.symbol);
+          if (!crypto || !settings.trackedCryptos.includes(crypto.id)) continue;
+
+          const change24h = settings.currency === 'usd' ? priceData.change24hUsd : priceData.change24hEur;
+          const currencySymbol = settings.currency === 'usd' ? '$' : '€';
+          const currentPrice = settings.currency === 'usd' ? priceData.priceUsd : priceData.priceEur;
+
+          // Check for emergency conditions
+          let shouldAlert = false;
+          let alertType = '';
+          let emoji = '';
+          
+          if (change24h <= -settings.emergencyThreshold) {
+            shouldAlert = true;
+            alertType = 'CRASH';
+            emoji = '💥';
+          } else if (change24h >= settings.emergencyThreshold * 1.5) {
+            shouldAlert = true;
+            alertType = 'PUMP';
+            emoji = '🚀';
+          } else if (Math.abs(change24h) >= 20) {
+            shouldAlert = true;
+            alertType = 'EXTREME VOLATILITY';
+            emoji = change24h > 0 ? '📈' : '📉';
           }
+
+          if (shouldAlert) {
+            // Prevent spam - only alert once per hour per crypto per user
+            const alertKey = `${chatId}-${crypto.id}-${alertType}`;
+            const now = Date.now();
+            const lastAlert = this.recentEmergencyAlerts.get(alertKey);
+            
+            if (lastAlert && (now - lastAlert) < 3600000) { // 1 hour cooldown
+              continue;
+            }
+            
+            const absChange = Math.abs(change24h).toFixed(1);
+            const direction = change24h > 0 ? 'UP' : 'DOWN';
+            
+            let alertMessage = `🚨 *${alertType} ALERT*\\n\\n${emoji} ${crypto.emoji} *${MessageFormatter.escapeMarkdown(crypto.symbol)}* moved *${absChange}%* ${direction}\\!\\n\\n`;
+            alertMessage += `💰 Current: ${currencySymbol}${MessageFormatter.escapeMarkdown(currentPrice.toLocaleString())}\\n`;
+            alertMessage += `📊 24h: ${change24h > 0 ? '\\+' : ''}${change24h.toFixed(1)}%`;
+            
+            try {
+              await this.bot.sendMessage(chatId, alertMessage, { parse_mode: 'MarkdownV2' });
+              this.recentEmergencyAlerts.set(alertKey, now);
+              console.log(`🚨 Emergency alert: ${crypto.symbol} ${change24h.toFixed(1)}% for ${chatId}`);
+            } catch (error) {
+              console.error(`Emergency alert error ${chatId}:`, error);
+              this.subscribedChats.delete(chatId);
+            }
+          }
+        }
+      } catch (error) {
+        console.error(`Error checking emergency alerts for ${chatId}:`, error);
+      }
+    }
+  }
+
+  private async checkPriceAlerts(pricesData: PriceData[]): Promise<void> {
+    if (this.alerts.size === 0) return;
+
+    for (const [chatId, userAlerts] of this.alerts.entries()) {
+      for (let i = userAlerts.length - 1; i >= 0; i--) {
+        const alert = userAlerts[i];
+        
+        if (!alert.active) continue;
+
+        const priceData = pricesData.find(p => {
+          const crypto = PriceService.findCryptoBySymbol(p.symbol);
+          return crypto?.id === alert.cryptoId;
+        });
+
+        if (!priceData) continue;
+
+        try {
+          const settings = await this.getUserSettings(chatId);
+          const currentPrice = settings.currency === 'usd' ? priceData.priceUsd : priceData.priceEur;
+          const currencySymbol = settings.currency === 'usd' ? '$' : '€';
+          
+          let shouldTrigger = false;
+          let alertMessage = '';
+          const crypto = PriceService.findCryptoById(alert.cryptoId);
+          const cryptoName = crypto ? `${crypto.emoji} ${crypto.symbol}` : alert.cryptoId.toUpperCase();
+          
+          if (alert.type === 'above' && currentPrice >= alert.price) {
+            shouldTrigger = true;
+            alertMessage = `🚨 *PRICE ALERT*\\n\\n📈 ${cryptoName} is now *above* ${currencySymbol}${MessageFormatter.escapeMarkdown(alert.price.toLocaleString())}\\n💰 Current: ${currencySymbol}${MessageFormatter.escapeMarkdown(currentPrice.toLocaleString())}`;
+          } else if (alert.type === 'below' && currentPrice <= alert.price) {
+            shouldTrigger = true;
+            alertMessage = `🚨 *PRICE ALERT*\\n\\n📉 ${cryptoName} is now *below* ${currencySymbol}${MessageFormatter.escapeMarkdown(alert.price.toLocaleString())}\\n💰 Current: ${currencySymbol}${MessageFormatter.escapeMarkdown(currentPrice.toLocaleString())}`;
+          }
+          
+          if (shouldTrigger) {
+            try {
+              await this.bot.sendMessage(chatId, alertMessage, { parse_mode: 'MarkdownV2' });
+              console.log(`🚨 Alert triggered: ${crypto?.symbol || alert.cryptoId} ${alert.type} ${alert.price} for ${chatId}`);
+              
+              userAlerts.splice(i, 1);
+              if (userAlerts.length === 0) {
+                this.alerts.delete(chatId);
+              } else {
+                this.alerts.set(chatId, userAlerts);
+              }
+              
+              await AlertModel.deleteOne({ 
+                chatId: alert.chatId, 
+                type: alert.type, 
+                price: alert.price,
+                cryptoId: alert.cryptoId,
+                active: true 
+              });
+            } catch (error) {
+              console.error(`Alert send error ${chatId}:`, error);
+            }
+          }
+        } catch (error) {
+          console.error(`Error checking alert for chat ${chatId}:`, error);
         }
       }
     }
@@ -184,7 +303,18 @@ class BarrettBot {
       await this.checkForExtremeMovements();
     });
 
-    console.log('🕐 Price schedulers started for all intervals');
+    // Clean up old emergency alert cache every hour
+    cron.schedule('0 * * * *', () => {
+      const now = Date.now();
+      const fourHoursAgo = now - 14400000; // 4 hours
+      for (const [key, timestamp] of this.recentEmergencyAlerts.entries()) {
+        if (timestamp < fourHoursAgo) {
+          this.recentEmergencyAlerts.delete(key);
+        }
+      }
+    });
+
+    console.log('🕐 Schedulers active');
   }
 
   private async processPriceUpdate(intervalType: UpdateInterval): Promise<void> {
@@ -199,29 +329,26 @@ class BarrettBot {
     if (targetChats.length === 0) return;
 
     try {
-      // Get all unique cryptos for target chats
+      // Get all unique cryptos for target chats + cryptos with active alerts
       const allTrackedCryptos = new Set<string>();
       for (const chatId of targetChats) {
         const settings = await this.getUserSettings(chatId);
         settings.trackedCryptos.forEach(crypto => allTrackedCryptos.add(crypto));
       }
       
+      // Add cryptos that have active alerts
+      for (const userAlerts of this.alerts.values()) {
+        userAlerts.forEach(alert => {
+          if (alert.active) {
+            allTrackedCryptos.add(alert.cryptoId);
+          }
+        });
+      }
+      
       const pricesData = await this.getCryptoPrices(Array.from(allTrackedCryptos));
       
-      // Store price history for each crypto
-      pricesData.forEach(priceData => {
-        if (!this.priceHistory.has(priceData.symbol)) {
-          this.priceHistory.set(priceData.symbol, []);
-        }
-        const history = this.priceHistory.get(priceData.symbol)!;
-        history.push(priceData);
-        if (history.length > 50) {
-          this.priceHistory.set(priceData.symbol, history.slice(-25));
-        }
-      });
-      
-      // Check for extreme movements
-      await this.checkCrashAlerts(pricesData);
+      await this.checkEmergencyAlerts(pricesData);
+      await this.checkPriceAlerts(pricesData);
       
       const messages = await Promise.all(
         targetChats.map(async (chatId) => {
@@ -241,7 +368,7 @@ class BarrettBot {
         }
       }
 
-      console.log(`${intervalType} price update sent to ${targetChats.length} chats`);
+      console.log(`📊 ${intervalType}: ${targetChats.length} chats`);
     } catch (error) {
       console.error(`Error in ${intervalType} price update:`, error);
     }
@@ -249,12 +376,11 @@ class BarrettBot {
 
   private async checkForExtremeMovements(): Promise<void> {
     try {
-      // Get prices for all supported cryptocurrencies for extreme movement detection
       const allCryptoIds = PriceService.SUPPORTED_CRYPTOS.map(c => c.id);
       const pricesData = await this.getCryptoPrices(allCryptoIds);
-      await this.checkCrashAlerts(pricesData);
+      await this.checkEmergencyAlerts(pricesData);
     } catch (error) {
-      console.error('Error checking extreme movements:', error);
+      console.error('Movement check error:', error);
     }
   }
 

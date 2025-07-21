@@ -73,7 +73,7 @@ class BarrettBot {
           updateInterval: settingsDoc.updateInterval || '1h',
           emergencyAlerts: settingsDoc.emergencyAlerts ?? true,
           emergencyThreshold: settingsDoc.emergencyThreshold || 10
-        });s
+        });
         this.subscribedChats.add(settingsDoc.chatId);
       });
       

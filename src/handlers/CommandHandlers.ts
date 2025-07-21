@@ -54,9 +54,8 @@ export class CommandHandlers {
         `You will receive ${interval.toLowerCase()} updates for your tracked cryptocurrencies\\.\n\n` +
         '*Quick Commands:*\n' +
         '/prices \\- Current prices\n' +
-        '/cryptos \\- Manage tracked coins\n' +
+        '/settings \\- Manage everything \\(cryptos\\, frequency\\, currency\\)\n' +
         '/alerts \\- Price alerts\n' +
-        '/settings \\- Configure bot\n' +
         '/help \\- All commands\n' +
         '/stop \\- Stop updates',
         { parse_mode: 'MarkdownV2' }
@@ -73,17 +72,15 @@ export class CommandHandlers {
         '*📊 Price Commands:*\n' +
         '/prices \\- Current prices of tracked cryptos\n' +
         '/price \\[symbol\\] \\- Single crypto price \\(e\\.g\\. /price BTC\\)\n\n' +
-        '*🪙 Crypto Management:*\n' +
-        '/cryptos \\- Manage tracked cryptocurrencies\n' +
-        '/add \\[symbol\\] \\- Add crypto to tracking \\(e\\.g\\. /add BTC\\)\n' +
-        '/remove \\[symbol\\] \\- Remove crypto from tracking\n' +
-        '/list \\- Available cryptocurrencies\n\n' +
         '*🔔 Alerts:*\n' +
         '/alerts \\- Manage price alerts\n' +
-        '/setalert \\[symbol\\] \\[price\\] \\- Create alert \\(e\\.g\\. /setalert BTC 50000\\)\n' +
+        '/setalert \\[price\\] \\- Create ETH alert \\(e\\.g\\. /setalert 3000\\)\n' +
         '/clearalerts \\- Delete all alerts\n\n' +
-        '*⚙️ Settings:*\n' +
-        '/settings \\- Configure currency\\, interval\\, cryptos\n' +
+        '*⚙️ Settings \\& Management:*\n' +
+        '/settings \\- All settings \\(currency\\, frequency\\, tracked cryptos\\)\n' +
+        '/list \\- Show available cryptocurrencies\n\n' +
+        '*🎛️ Controls:*\n' +
+        '/start \\- Activate bot\n' +
         '/stop \\- Stop all updates',
         { parse_mode: 'MarkdownV2' }
       );
@@ -158,8 +155,7 @@ export class CommandHandlers {
       }
       
       message += '*Commands:*\n';
-      message += '/add \\[symbol\\] \\- Add cryptocurrency\n';
-      message += '/remove \\[symbol\\] \\- Remove cryptocurrency\n';
+      message += '/settings \\- Manage tracked cryptocurrencies\n';
       message += '/list \\- Show available cryptocurrencies';
       
       this.bot.sendMessage(chatId, message, { parse_mode: 'MarkdownV2' });

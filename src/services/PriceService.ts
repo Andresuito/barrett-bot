@@ -5,16 +5,16 @@ export class PriceService {
   private static readonly BASE_API_URL = 'https://api.coingecko.com/api/v3';
   
   static readonly SUPPORTED_CRYPTOS: CryptoCurrency[] = [
-    { id: 'ethereum', symbol: 'ETH', name: 'Ethereum' },
-    { id: 'bitcoin', symbol: 'BTC', name: 'Bitcoin' },
-    { id: 'binancecoin', symbol: 'BNB', name: 'BNB' },
-    { id: 'cardano', symbol: 'ADA', name: 'Cardano' },
-    { id: 'solana', symbol: 'SOL', name: 'Solana' },
-    { id: 'chainlink', symbol: 'LINK', name: 'Chainlink' },
-    { id: 'polygon', symbol: 'MATIC', name: 'Polygon' },
-    { id: 'dogecoin', symbol: 'DOGE', name: 'Dogecoin' },
-    { id: 'shiba-inu', symbol: 'SHIB', name: 'Shiba Inu' },
-    { id: 'avalanche-2', symbol: 'AVAX', name: 'Avalanche' }
+    { id: 'ethereum', symbol: 'ETH', name: 'Ethereum', emoji: '🔷' },
+    { id: 'bitcoin', symbol: 'BTC', name: 'Bitcoin', emoji: '₿' },
+    { id: 'binancecoin', symbol: 'BNB', name: 'BNB', emoji: '🔶' },
+    { id: 'cardano', symbol: 'ADA', name: 'Cardano', emoji: '🎯' },
+    { id: 'solana', symbol: 'SOL', name: 'Solana', emoji: '☀️' },
+    { id: 'chainlink', symbol: 'LINK', name: 'Chainlink', emoji: '🔗' },
+    { id: 'polygon', symbol: 'MATIC', name: 'Polygon', emoji: '🔮' },
+    { id: 'dogecoin', symbol: 'DOGE', name: 'Dogecoin', emoji: '🐕' },
+    { id: 'shiba-inu', symbol: 'SHIB', name: 'Shiba Inu', emoji: '🐶' },
+    { id: 'avalanche-2', symbol: 'AVAX', name: 'Avalanche', emoji: '🏔️' }
   ];
 
   static async getCryptoPrices(cryptoIds: string[]): Promise<PriceData[]> {

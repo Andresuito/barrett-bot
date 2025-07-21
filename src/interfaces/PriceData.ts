@@ -18,4 +18,5 @@ export interface CryptoCurrency {
   id: string;
   symbol: string;
   name: string;
+  emoji: string;
 }

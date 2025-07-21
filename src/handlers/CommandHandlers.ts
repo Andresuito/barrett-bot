@@ -148,7 +148,7 @@ export class CommandHandlers {
         settings.trackedCryptos.forEach((cryptoId, index) => {
           const crypto = PriceService.findCryptoById(cryptoId);
           if (crypto) {
-            message += `${index + 1}\\. ${escapeText(crypto.symbol)} \\- ${escapeText(crypto.name)}\n`;
+            message += `${index + 1}\\. ${crypto.emoji} ${escapeText(crypto.symbol)} \\- ${escapeText(crypto.name)}\n`;
           }
         });
         message += '\n';
@@ -242,7 +242,7 @@ export class CommandHandlers {
       let message = '📋 *AVAILABLE CRYPTOCURRENCIES*\n\n';
       
       PriceService.SUPPORTED_CRYPTOS.forEach((crypto, index) => {
-        message += `${escapeText(crypto.symbol)} \\- ${escapeText(crypto.name)}\n`;
+        message += `${crypto.emoji} ${escapeText(crypto.symbol)} \\- ${escapeText(crypto.name)}\n`;
       });
       
       message += '\n*Usage:* /add \\[SYMBOL\\] to start tracking';
@@ -412,6 +412,9 @@ export class CommandHandlers {
             { text: '⏰ Update Frequency', callback_data: 'settings_interval' }
           ],
           [
+            { text: '🪙 Tracked Cryptos', callback_data: 'settings_cryptos' }
+          ],
+          [
             { text: '✅ Done', callback_data: 'settings_done' }
           ]
         ]
@@ -419,10 +422,23 @@ export class CommandHandlers {
       
       const currencySymbol = settings.currency === 'usd' ? '$' : '€';
       
+      const escapeText = (text: string) => text.replace(/[_*[\]()~`>#+=|{}.!-]/g, '\\$&');
+      let trackedCryptosText = '';
+      if (settings.trackedCryptos.length > 0) {
+        const trackedNames = settings.trackedCryptos.map(cryptoId => {
+          const crypto = PriceService.findCryptoById(cryptoId);
+          return crypto ? `${crypto.emoji} ${crypto.symbol}` : cryptoId;
+        }).join(' ');
+        trackedCryptosText = `🪙 *Tracked Cryptos:* ${escapeText(trackedNames)}\n`;
+      } else {
+        trackedCryptosText = `🪙 *Tracked Cryptos:* None selected\n`;
+      }
+      
       this.bot.sendMessage(chatId, 
         `⚙️ *USER SETTINGS*\n\n` +
         `💰 *Currency:* ${currencySymbol} ${settings.currency.toUpperCase()}\n` +
-        `⏰ *Update Frequency:* ${this.getIntervalText(settings.updateInterval)}\n\n` +
+        `⏰ *Update Frequency:* ${this.getIntervalText(settings.updateInterval)}\n` +
+        trackedCryptosText + `\n` +
         `Select what you want to change:`,
         { parse_mode: 'MarkdownV2', reply_markup: keyboard }
       );
@@ -557,6 +573,9 @@ export class CommandHandlers {
           { text: '⏰ Update Frequency', callback_data: 'settings_interval' }
         ],
         [
+          { text: '🪙 Tracked Cryptos', callback_data: 'settings_cryptos' }
+        ],
+        [
           { text: '✅ Done', callback_data: 'settings_done' }
         ]
       ]
@@ -564,11 +583,24 @@ export class CommandHandlers {
     
     const currencySymbol = settings.currency === 'usd' ? '$' : '€';
     
+    const escapeText = (text: string) => text.replace(/[_*[\]()~`>#+=|{}.!-]/g, '\\$&');
+    let trackedCryptosText = '';
+    if (settings.trackedCryptos.length > 0) {
+      const trackedNames = settings.trackedCryptos.map(cryptoId => {
+        const crypto = PriceService.findCryptoById(cryptoId);
+        return crypto ? `${crypto.emoji} ${crypto.symbol}` : cryptoId;
+      }).join(' ');
+      trackedCryptosText = `🪙 *Tracked Cryptos:* ${escapeText(trackedNames)}\n`;
+    } else {
+      trackedCryptosText = `🪙 *Tracked Cryptos:* None selected\n`;
+    }
+    
     try {
       this.bot.editMessageText(
         `⚙️ *USER SETTINGS*\n\n` +
         `💰 *Currency:* ${currencySymbol} ${settings.currency.toUpperCase()}\n` +
-        `⏰ *Update Frequency:* ${this.getIntervalText(settings.updateInterval)}\n\n` +
+        `⏰ *Update Frequency:* ${this.getIntervalText(settings.updateInterval)}\n` +
+        trackedCryptosText + `\n` +
         `Select what you want to change:`,
         {
           chat_id: chatId,
@@ -612,7 +644,7 @@ export class CommandHandlers {
       settings.trackedCryptos.forEach((cryptoId, index) => {
         const crypto = PriceService.findCryptoById(cryptoId);
         if (crypto) {
-          message += `${index + 1}\\. ${escapeText(crypto.symbol)} \\- ${escapeText(crypto.name)}\n`;
+          message += `${index + 1}\\. ${crypto.emoji} ${escapeText(crypto.symbol)} \\- ${escapeText(crypto.name)}\n`;
         }
       });
       message += '\n';
@@ -632,12 +664,12 @@ export class CommandHandlers {
         const row = [];
         const crypto1 = PriceService.findCryptoById(settings.trackedCryptos[i]);
         if (crypto1) {
-          row.push({ text: `❌ ${crypto1.symbol}`, callback_data: `crypto_remove_${crypto1.id}` });
+          row.push({ text: `❌ ${crypto1.emoji} ${crypto1.symbol}`, callback_data: `crypto_remove_${crypto1.id}` });
         }
         if (i + 1 < settings.trackedCryptos.length) {
           const crypto2 = PriceService.findCryptoById(settings.trackedCryptos[i + 1]);
           if (crypto2) {
-            row.push({ text: `❌ ${crypto2.symbol}`, callback_data: `crypto_remove_${crypto2.id}` });
+            row.push({ text: `❌ ${crypto2.emoji} ${crypto2.symbol}`, callback_data: `crypto_remove_${crypto2.id}` });
           }
         }
         removeButtons.push(row);
@@ -678,10 +710,10 @@ export class CommandHandlers {
       
       const crypto = PriceService.findCryptoById(cryptoId);
       this.bot.answerCallbackQuery(callbackQuery.id, { 
-        text: `${crypto?.symbol || 'Crypto'} removed` 
+        text: `${crypto?.emoji || ''} ${crypto?.symbol || 'Crypto'} removed` 
       });
       
-      await this.showCryptoSettings(chatId, message!.message_id);
+      await this.showSettingsMenu(chatId, message!.message_id);
     } else if (data === 'crypto_add_menu') {
       await this.showAddCryptoMenu(chatId, message!.message_id);
     } else if (data?.startsWith('crypto_add_')) {
@@ -692,10 +724,10 @@ export class CommandHandlers {
       
       const crypto = PriceService.findCryptoById(cryptoId);
       this.bot.answerCallbackQuery(callbackQuery.id, { 
-        text: `${crypto?.symbol || 'Crypto'} added` 
+        text: `${crypto?.emoji || ''} ${crypto?.symbol || 'Crypto'} added` 
       });
       
-      await this.showCryptoSettings(chatId, message!.message_id);
+      await this.showSettingsMenu(chatId, message!.message_id);
     }
   }
 
@@ -712,9 +744,9 @@ export class CommandHandlers {
     // Add buttons in rows of 2
     for (let i = 0; i < availableCryptos.length; i += 2) {
       const row = [];
-      row.push({ text: availableCryptos[i].symbol, callback_data: `crypto_add_${availableCryptos[i].id}` });
+      row.push({ text: `${availableCryptos[i].emoji} ${availableCryptos[i].symbol}`, callback_data: `crypto_add_${availableCryptos[i].id}` });
       if (i + 1 < availableCryptos.length) {
-        row.push({ text: availableCryptos[i + 1].symbol, callback_data: `crypto_add_${availableCryptos[i + 1].id}` });
+        row.push({ text: `${availableCryptos[i + 1].emoji} ${availableCryptos[i + 1].symbol}`, callback_data: `crypto_add_${availableCryptos[i + 1].id}` });
       }
       keyboard.inline_keyboard.push(row);
     }

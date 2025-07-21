@@ -981,7 +981,7 @@ export class CommandHandlers {
         const balance = await WalletService.getWalletBalance(address, detectedNetwork);
         
         if (!balance) {
-          await this.bot.editMessageText('❌ Error fetching wallet balance\\. Please try again later\\.', {
+          await this.bot.editMessageText('❌ Unable to fetch wallet balance\\. This could be due to API rate limits\\. Please try again in a few moments\\.', {
             chat_id: chatId,
             message_id: loadingMsg.message_id,
             parse_mode: 'MarkdownV2'

@@ -401,9 +401,26 @@ barrettBot.start();
 
 process.on('unhandledRejection', (error) => {
   console.error('Unhandled promise rejection:', error);
+  // Don't exit for unhandled rejections - log and continue
+  if (error instanceof Error) {
+    console.error('Stack trace:', error.stack);
+  }
 });
 
 process.on('uncaughtException', (error) => {
   console.error('Uncaught exception:', error);
-  process.exit(1);
+  if (error instanceof Error) {
+    console.error('Stack trace:', error.stack);
+  }
+  
+  // Only exit for truly fatal errors, not API failures
+  if (error.message?.includes('ECONNREFUSED') || 
+      error.message?.includes('SIGTERM') || 
+      error.message?.includes('SIGINT')) {
+    console.log('🔄 Attempting graceful shutdown...');
+    process.exit(1);
+  } else {
+    console.log('🚀 Continuing operation despite error...');
+    // Continue running for recoverable errors like API failures
+  }
 });

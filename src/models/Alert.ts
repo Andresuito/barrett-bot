@@ -2,8 +2,7 @@ import mongoose, { Schema, Document } from 'mongoose';
 
 export interface IAlert extends Document {
   chatId: number;
-  coinId: string;
-  coinSymbol: string;
+  cryptoId: string;
   type: 'above' | 'below';
   price: number;
   active: boolean;
@@ -16,6 +15,10 @@ const AlertSchema: Schema = new Schema({
     type: Number,
     required: true,
     index: true
+  },
+  cryptoId: {
+    type: String,
+    required: true
   },
   type: {
     type: String,
@@ -35,6 +38,6 @@ const AlertSchema: Schema = new Schema({
 });
 
 AlertSchema.index({ chatId: 1, active: 1 });
-AlertSchema.index({ chatId: 1, coinId: 1 });
+AlertSchema.index({ chatId: 1, cryptoId: 1 });
 
 export const Alert = mongoose.model<IAlert>('Alert', AlertSchema);

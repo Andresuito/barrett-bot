@@ -1,4 +1,6 @@
 export interface PriceData {
+  symbol: string;
+  name: string;
   priceUsd: number;
   priceEur: number;
   change24hUsd: number;
@@ -10,4 +12,10 @@ export interface PriceData {
   volume24hUsd: number;
   volume24hEur: number;
   timestamp: Date;
+}
+
+export interface CryptoCurrency {
+  id: string;
+  symbol: string;
+  name: string;
 }

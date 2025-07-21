@@ -11,11 +11,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Architecture
 
-This is a modular TypeScript-based Telegram bot that provides Ethereum price tracking and alerts with MongoDB persistence.
+Barrett is a modular TypeScript-based Telegram bot that provides multi-cryptocurrency price tracking and alerts with MongoDB persistence.
 
 ### Core Components
 
-- **EthereumBot Class** (`src/bot.ts`): Main bot orchestrator with initialization and scheduling
+- **BarrettBot Class** (`src/bot.ts`): Main bot orchestrator with initialization and scheduling
 - **CommandHandlers** (`src/handlers/CommandHandlers.ts`): All bot command implementations
 - **Database Models** (`src/models/`): MongoDB schemas for alerts and user settings
 - **Services** (`src/services/`): Business logic for price fetching and alert processing
@@ -26,25 +26,27 @@ This is a modular TypeScript-based Telegram bot that provides Ethereum price tra
 
 The project follows a clean, modular architecture:
 - **Database Layer**: MongoDB with Mongoose for data persistence
-- **Service Layer**: PriceService (API calls), AlertService (alert logic)
+- **Service Layer**: PriceService (multi-crypto API calls), AlertService (alert logic)
 - **Handler Layer**: CommandHandlers for bot interactions
-- **Core Layer**: EthereumBot orchestrates all components
+- **Core Layer**: BarrettBot orchestrates all components
 
 ### Key Features
 
-- Real-time Ethereum price tracking with MongoDB persistence
-- Customizable update intervals (15min, 30min, 1h, 2h)
-- Price alerts (above/below thresholds) with database storage
-- Crash detection alerts for extreme price movements
-- User settings persistence (currency preferences)
-- Multi-currency support (USD/EUR)
-- Automatic cleanup of invalid chat IDs
+- **Multi-Cryptocurrency Support**: Track up to 5 cryptocurrencies simultaneously
+- **Supported Cryptocurrencies**: ETH, BTC, BNB, ADA, SOL, LINK, MATIC, DOGE, SHIB, AVAX
+- **Flexible User Configuration**: Each user can select their own tracked cryptos and update intervals
+- **Customizable Update Intervals**: 15min, 30min, 1h, 2h per user
+- **Price Alerts**: Multi-crypto alerts (above/below thresholds) with database storage
+- **Extreme Movement Detection**: Automatic alerts for 15%+ price movements
+- **User Settings Persistence**: Currency preferences, tracked cryptos, update intervals
+- **Multi-Currency Support**: USD/EUR with proper formatting
+- **Automatic Chat Cleanup**: Invalid chat IDs removed automatically
 
 ### Dependencies
 
 - `node-telegram-bot-api` - Telegram Bot API wrapper
 - `mongoose` - MongoDB object modeling
-- `axios` - HTTP client for API calls
+- `axios` - HTTP client for CoinGecko API calls
 - `node-cron` - Scheduled tasks and job management
 - `dotenv` - Environment variable management
 - `ts-node` & `typescript` - TypeScript runtime and compiler
@@ -58,25 +60,49 @@ Requires environment variables:
 
 ### Database Schema
 
-- **Alerts**: chatId, type (above/below), price threshold, active status
-- **UserSettings**: chatId, currency preference (usd/eur)
+- **Alerts**: chatId, cryptoId, type (above/below), price threshold, active status
+- **UserSettings**: chatId, currency preference (usd/eur), trackedCryptos array, updateInterval
 
 ### Bot Commands Structure
 
 Commands are handled in `src/handlers/CommandHandlers.ts`:
-- **Core**: `/start`, `/stop`, `/help`
-- **Price Info**: `/price`, real-time updates
-- **Alerts**: `/setalert`, `/alerts`, `/clearalerts`
-- **Settings**: Currency and interval configuration
+
+**Core Commands:**
+- `/start` - Activate bot with personalized setup
+- `/stop` - Stop all updates and alerts
+- `/help` - Complete command reference
+
+**Price Commands:**
+- `/prices` - Show all tracked cryptocurrencies
+- `/price [SYMBOL]` - Single cryptocurrency price (e.g., `/price BTC`)
+
+**Crypto Management:**
+- `/cryptos` - Manage tracked cryptocurrencies
+- `/add [SYMBOL]` - Add crypto to tracking (e.g., `/add BTC`)
+- `/remove [SYMBOL]` - Remove crypto from tracking
+- `/list` - Show all available cryptocurrencies
+
+**Alert Commands:**
+- `/alerts` - View and manage price alerts
+- `/setalert [SYMBOL] [PRICE]` - Create price alert
+- `/clearalerts` - Delete all alerts
+
+**Settings:**
+- `/settings` - Configure currency, interval, and tracked cryptos
+- `/interval` - Set update frequency
 
 ### Data Flow
 
-1. Bot initializes, connects to MongoDB, loads persisted data
+1. Bot initializes, connects to MongoDB, loads user settings and alerts
 2. Multiple cron jobs run for different update intervals
-3. PriceService fetches data from CoinGecko API
-4. AlertService checks thresholds and triggers notifications
-5. MessageFormatter creates MarkdownV2-formatted responses
-6. Invalid chats are automatically cleaned from subscriptions
+3. For each interval, determine which users need updates
+4. Fetch prices for all unique cryptocurrencies being tracked
+5. PriceService fetches batch data from CoinGecko API
+6. Check for extreme movements (15%+ changes) across all cryptos
+7. Format personalized messages for each user based on their tracked cryptos
+8. AlertService checks thresholds and triggers notifications
+9. MessageFormatter creates MarkdownV2-formatted responses
+10. Invalid chats are automatically cleaned from subscriptions
 
 ### Error Handling & Resilience
 
@@ -85,9 +111,24 @@ Commands are handled in `src/handlers/CommandHandlers.ts`:
 - Automatic chat cleanup for invalid/blocked users
 - Process-level handlers for unhandled exceptions
 - Job scheduling with error isolation per interval
+- Batch API calls to minimize rate limiting
 
 ### Cron Schedule
 
-- Price updates: 15min, 30min, 1h, 2h intervals
-- Extreme movement checks: Every 5 minutes
-- Users can customize their update frequency
+- **Price Updates**: 15min, 30min, 1h, 2h intervals (user-configurable)
+- **Extreme Movement Checks**: Every 5 minutes across all supported cryptocurrencies
+- **Batch Processing**: Efficient handling of multiple users and cryptocurrencies
+
+### Supported Cryptocurrencies
+
+Barrett supports 10 major cryptocurrencies:
+- **ETH** - Ethereum
+- **BTC** - Bitcoin  
+- **BNB** - BNB
+- **ADA** - Cardano
+- **SOL** - Solana
+- **LINK** - Chainlink
+- **MATIC** - Polygon
+- **DOGE** - Dogecoin
+- **SHIB** - Shiba Inu
+- **AVAX** - Avalanche

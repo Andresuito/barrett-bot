@@ -5,22 +5,19 @@ import { connectToDatabase } from './database';
 import { Alert as AlertModel, IAlert } from './models/Alert';
 import { UserSettings as UserSettingsModel, IUserSettings } from './models/UserSettings';
 import { PriceData, Alert, UserSettings, UpdateInterval } from './interfaces';
-import { PriceService, AlertService } from './services';
+import { PriceService } from './services';
 import { CommandHandlers } from './handlers';
 import { MessageFormatter } from './utils';
 
 dotenv.config();
 
-class EthereumBot {
+class BarrettBot {
   private bot: TelegramBot;
   private subscribedChats: Set<number> = new Set();
-  private lastPriceUsd: number = 0;
-  private lastPriceEur: number = 0;
   private alerts: Map<number, Alert[]> = new Map();
-  private userUpdateIntervals: Map<number, UpdateInterval> = new Map();
   private userSettings: Map<number, UserSettings> = new Map();
   private commandHandlers!: CommandHandlers;
-  private priceHistory: PriceData[] = [];
+  private priceHistory: Map<string, PriceData[]> = new Map();
   private scheduledJobs: Map<string, any> = new Map();
   
 
@@ -50,6 +47,7 @@ class EthereumBot {
         const userAlerts = this.alerts.get(alertDoc.chatId) || [];
         userAlerts.push({
           chatId: alertDoc.chatId,
+          cryptoId: alertDoc.cryptoId,
           type: alertDoc.type,
           price: alertDoc.price,
           active: alertDoc.active
@@ -70,7 +68,9 @@ class EthereumBot {
       
       settingsDocs.forEach((settingsDoc: IUserSettings) => {
         this.userSettings.set(settingsDoc.chatId, {
-          currency: settingsDoc.currency
+          currency: settingsDoc.currency,
+          trackedCryptos: settingsDoc.trackedCryptos || ['ethereum'],
+          updateInterval: settingsDoc.updateInterval || '1h'
         });
       });
       
@@ -85,11 +85,15 @@ class EthereumBot {
     
     if (!settings) {
       // Create default settings for new user
-      settings = { currency: 'usd' };
+      settings = { 
+        currency: 'usd',
+        trackedCryptos: ['ethereum'],
+        updateInterval: '1h'
+      };
       try {
         await UserSettingsModel.findOneAndUpdate(
           { chatId },
-          { chatId, currency: settings.currency },
+          { chatId, ...settings },
           { upsert: true, new: true }
         );
         this.userSettings.set(chatId, settings);
@@ -125,86 +129,37 @@ class EthereumBot {
       this.bot,
       this.subscribedChats,
       this.alerts,
-      this.userUpdateIntervals,
       this.getUserSettings.bind(this),
       this.updateUserSettings.bind(this),
-      this.formatPriceMessage.bind(this),
-      this.getEthereumPrice.bind(this)
+      this.formatPricesMessage.bind(this),
+      this.getCryptoPrices.bind(this)
     );
     this.commandHandlers.setupCommands();
   }
 
-  private async getEthereumPrice(): Promise<PriceData> {
-    return PriceService.getEthereumPrice();
+  private async getCryptoPrices(cryptoIds: string[]): Promise<PriceData[]> {
+    return PriceService.getCryptoPrices(cryptoIds);
   }
 
-  private async formatPriceMessage(data: PriceData, chatId: number): Promise<string> {
+  private async formatPricesMessage(data: PriceData[], chatId: number): Promise<string> {
     const settings = await this.getUserSettings(chatId);
-    const message = await MessageFormatter.formatPriceMessage(
-      data,
-      settings,
-      this.lastPriceUsd,
-      this.lastPriceEur
-    );
-    
-    // Update last prices after formatting
-    if (settings.currency === 'usd') {
-      this.lastPriceUsd = data.priceUsd;
-    } else {
-      this.lastPriceEur = data.priceEur;
-    }
-    
-    return message;
+    return MessageFormatter.formatPricesMessage(data, settings);
   }
 
 
-  private async checkAlerts(priceData: PriceData): Promise<void> {
-    const triggeredAlerts = await AlertService.checkAlerts(
-      this.alerts,
-      priceData,
-      this.getUserSettings.bind(this)
-    );
-    
-    for (const { chatId, message, alertIndex } of triggeredAlerts) {
-      try {
-        await this.bot.sendMessage(chatId, message, { parse_mode: 'MarkdownV2' });
-        console.log(`✅ Alert sent successfully to chat ${chatId}`);
+  private async checkCrashAlerts(pricesData: PriceData[]): Promise<void> {
+    // Simplified crash alert system - can be enhanced later
+    for (const priceData of pricesData) {
+      if (Math.abs(priceData.change24hUsd) > 15) { // Alert on 15%+ moves
+        const alertMessage = `🚨 *EXTREME MOVEMENT ALERT*\n\n${priceData.name} \\(${priceData.symbol}\\) moved ${priceData.change24hUsd > 0 ? '📈' : '📉'} ${Math.abs(priceData.change24hUsd).toFixed(2)}% in 24h\\!`;
         
-        const userAlerts = this.alerts.get(chatId)!;
-        const alert = userAlerts[alertIndex];
-        
-        await AlertService.deleteTriggeredAlert(alert);
-        
-        // Remove from memory
-        userAlerts.splice(alertIndex, 1);
-        if (userAlerts.length === 0) {
-          this.alerts.delete(chatId);
-        } else {
-          this.alerts.set(chatId, userAlerts);
+        for (const chatId of this.subscribedChats) {
+          try {
+            await this.bot.sendMessage(chatId, alertMessage, { parse_mode: 'MarkdownV2' });
+          } catch (error) {
+            console.error(`Error sending crash alert to chat ${chatId}:`, error);
+          }
         }
-      } catch (error) {
-        console.error(`Error sending alert to chat ${chatId}:`, error);
-        this.subscribedChats.delete(chatId);
-        this.alerts.delete(chatId);
-      }
-    }
-  }
-
-  private async checkCrashAlerts(priceData: PriceData): Promise<void> {
-    const crashAlerts = await AlertService.checkCrashAlerts(
-      this.subscribedChats,
-      priceData,
-      this.lastPriceUsd,
-      this.lastPriceEur,
-      this.priceHistory,
-      this.getUserSettings.bind(this)
-    );
-    
-    for (const { chatId, message } of crashAlerts) {
-      try {
-        await this.bot.sendMessage(chatId, message, { parse_mode: 'MarkdownV2' });
-      } catch (error) {
-        console.error(`Error sending crash alert to chat ${chatId}:`, error);
       }
     }
   }
@@ -233,26 +188,46 @@ class EthereumBot {
   }
 
   private async processPriceUpdate(intervalType: UpdateInterval): Promise<void> {
-    const targetChats = Array.from(this.subscribedChats).filter(chatId => {
-      const userInterval = this.userUpdateIntervals.get(chatId) || '1h';
-      return userInterval === intervalType;
-    });
+    const targetChats: number[] = [];
+    for (const chatId of this.subscribedChats) {
+      const settings = await this.getUserSettings(chatId);
+      if (settings.updateInterval === intervalType) {
+        targetChats.push(chatId);
+      }
+    }
 
     if (targetChats.length === 0) return;
 
     try {
-      const priceData = await this.getEthereumPrice();
-      this.priceHistory.push(priceData);
-      
-      if (this.priceHistory.length > 50) {
-        this.priceHistory = this.priceHistory.slice(-25);
+      // Get all unique cryptos for target chats
+      const allTrackedCryptos = new Set<string>();
+      for (const chatId of targetChats) {
+        const settings = await this.getUserSettings(chatId);
+        settings.trackedCryptos.forEach(crypto => allTrackedCryptos.add(crypto));
       }
       
-      await this.checkAlerts(priceData);
+      const pricesData = await this.getCryptoPrices(Array.from(allTrackedCryptos));
+      
+      // Store price history for each crypto
+      pricesData.forEach(priceData => {
+        if (!this.priceHistory.has(priceData.symbol)) {
+          this.priceHistory.set(priceData.symbol, []);
+        }
+        const history = this.priceHistory.get(priceData.symbol)!;
+        history.push(priceData);
+        if (history.length > 50) {
+          this.priceHistory.set(priceData.symbol, history.slice(-25));
+        }
+      });
+      
+      // Check for extreme movements
+      await this.checkCrashAlerts(pricesData);
       
       const messages = await Promise.all(
         targetChats.map(async (chatId) => {
-          const message = await this.formatPriceMessage(priceData, chatId);
+          const settings = await this.getUserSettings(chatId);
+          const userPricesData = pricesData.filter(p => settings.trackedCryptos.includes(PriceService.findCryptoBySymbol(p.symbol)?.id || ''));
+          const message = await this.formatPricesMessage(userPricesData, chatId);
           return { chatId, message };
         })
       );
@@ -274,11 +249,10 @@ class EthereumBot {
 
   private async checkForExtremeMovements(): Promise<void> {
     try {
-      const priceData = await this.getEthereumPrice();
-      await this.checkAlerts(priceData);
-      await this.checkCrashAlerts(priceData);
-      this.lastPriceUsd = priceData.priceUsd;
-      this.lastPriceEur = priceData.priceEur;
+      // Get prices for all supported cryptocurrencies for extreme movement detection
+      const allCryptoIds = PriceService.SUPPORTED_CRYPTOS.map(c => c.id);
+      const pricesData = await this.getCryptoPrices(allCryptoIds);
+      await this.checkCrashAlerts(pricesData);
     } catch (error) {
       console.error('Error checking extreme movements:', error);
     }
@@ -286,7 +260,7 @@ class EthereumBot {
 
 
   public start(): void {
-    console.log('🤖 Ethereum Telegram Bot started');
+    console.log('🤖 Barrett Crypto Bot started');
   }
 }
 
@@ -297,8 +271,8 @@ if (!token) {
   process.exit(1);
 }
 
-const ethBot = new EthereumBot(token);
-ethBot.start();
+const barrettBot = new BarrettBot(token);
+barrettBot.start();
 
 process.on('unhandledRejection', (error) => {
   console.error('Unhandled promise rejection:', error);

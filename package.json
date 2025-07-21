@@ -1,5 +1,5 @@
 {
-  "name": "ethereum-telegram-bot",
+  "name": "barrett-crypto-bot",
   "version": "1.0.0",
   "main": "index.js",
   "scripts": {
@@ -11,7 +11,7 @@
   "keywords": [],
   "author": "",
   "license": "ISC",
-  "description": "",
+  "description": "Barrett - Multi-cryptocurrency Telegram bot for price tracking and alerts",
   "dependencies": {
     "@types/mongoose": "^5.11.97",
     "@types/node": "^24.0.15",

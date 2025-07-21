@@ -1,35 +1,33 @@
 import TelegramBot from 'node-telegram-bot-api';
-import { Alert, UpdateInterval, UserSettings } from '../interfaces';
+import { Alert, UpdateInterval, UserSettings, PriceData, CryptoCurrency } from '../interfaces';
 import { Alert as AlertModel } from '../models/Alert';
+import { PriceService } from '../services';
 
 export class CommandHandlers {
   private bot: TelegramBot;
   private subscribedChats: Set<number>;
   private alerts: Map<number, Alert[]>;
-  private userUpdateIntervals: Map<number, UpdateInterval>;
   private getUserSettings: (chatId: number) => Promise<UserSettings>;
   private updateUserSettings: (chatId: number, updates: Partial<UserSettings>) => Promise<void>;
-  private formatPriceMessage: (data: any, chatId: number) => Promise<string>;
-  private getEthereumPrice: () => Promise<any>;
+  private formatPricesMessage: (data: PriceData[], chatId: number) => Promise<string>;
+  private getCryptoPrices: (cryptoIds: string[]) => Promise<PriceData[]>;
 
   constructor(
     bot: TelegramBot,
     subscribedChats: Set<number>,
     alerts: Map<number, Alert[]>,
-    userUpdateIntervals: Map<number, UpdateInterval>,
     getUserSettings: (chatId: number) => Promise<UserSettings>,
     updateUserSettings: (chatId: number, updates: Partial<UserSettings>) => Promise<void>,
-    formatPriceMessage: (data: any, chatId: number) => Promise<string>,
-    getEthereumPrice: () => Promise<any>
+    formatPricesMessage: (data: PriceData[], chatId: number) => Promise<string>,
+    getCryptoPrices: (cryptoIds: string[]) => Promise<PriceData[]>
   ) {
     this.bot = bot;
     this.subscribedChats = subscribedChats;
     this.alerts = alerts;
-    this.userUpdateIntervals = userUpdateIntervals;
     this.getUserSettings = getUserSettings;
     this.updateUserSettings = updateUserSettings;
-    this.formatPriceMessage = formatPriceMessage;
-    this.getEthereumPrice = getEthereumPrice;
+    this.formatPricesMessage = formatPricesMessage;
+    this.getCryptoPrices = getCryptoPrices;
   }
 
   setupCommands(): void {
@@ -37,25 +35,28 @@ export class CommandHandlers {
     this.setupHelpCommand();
     this.setupStopCommand();
     this.setupPriceCommand();
+    this.setupCryptoCommands();
     this.setupAlertsCommands();
     this.setupSettingsCommands();
     this.setupCallbackHandlers();
   }
 
   private setupStartCommand(): void {
-    this.bot.onText(/\/start/, (msg) => {
+    this.bot.onText(/\/start/, async (msg) => {
       const chatId = msg.chat.id;
       this.subscribedChats.add(chatId);
       
+      const settings = await this.getUserSettings(chatId);
+      const interval = this.getIntervalText(settings.updateInterval);
+      
       this.bot.sendMessage(chatId, 
-        '🚀 *Ethereum Bot Activated\\!*\n\n' +
-        'You will receive hourly price updates\\.\n\n' +
-        '*Commands:*\n' +
-        '/price \\- Current price\n' +
-        '/alerts \\- Manage alerts\n' +
-        '/setalert \\[price\\] \\- Create alert\n' +
-        '/interval \\- Set update frequency\n' +
-        '/settings \\- Configure currency\n' +
+        '🚀 *Barrett Crypto Bot Activated\\!*\n\n' +
+        `You will receive ${interval.toLowerCase()} updates for your tracked cryptocurrencies\\.\n\n` +
+        '*Quick Commands:*\n' +
+        '/prices \\- Current prices\n' +
+        '/cryptos \\- Manage tracked coins\n' +
+        '/alerts \\- Price alerts\n' +
+        '/settings \\- Configure bot\n' +
         '/help \\- All commands\n' +
         '/stop \\- Stop updates',
         { parse_mode: 'MarkdownV2' }
@@ -68,15 +69,22 @@ export class CommandHandlers {
       const chatId = msg.chat.id;
       
       this.bot.sendMessage(chatId,
-        '📖 *AVAILABLE COMMANDS*\n\n' +
-        '/price \\- Current ETH price\n' +
+        '📖 *BARRETT CRYPTO BOT*\n\n' +
+        '*📊 Price Commands:*\n' +
+        '/prices \\- Current prices of tracked cryptos\n' +
+        '/price \\[symbol\\] \\- Single crypto price \\(e\\.g\\. /price BTC\\)\n\n' +
+        '*🪙 Crypto Management:*\n' +
+        '/cryptos \\- Manage tracked cryptocurrencies\n' +
+        '/add \\[symbol\\] \\- Add crypto to tracking \\(e\\.g\\. /add BTC\\)\n' +
+        '/remove \\[symbol\\] \\- Remove crypto from tracking\n' +
+        '/list \\- Available cryptocurrencies\n\n' +
+        '*🔔 Alerts:*\n' +
         '/alerts \\- Manage price alerts\n' +
-        '/setalert \\[price\\] \\- Create alert\n' +
-        '/delalert \\[number\\] \\- Delete specific alert\n' +
-        '/clearalerts \\- Delete all alerts\n' +
-        '/interval \\- Set update frequency \\(15min/30min/1h/2h\\)\n' +
-        '/settings \\- Configure currency\n' +
-        '/stop \\- Stop updates',
+        '/setalert \\[symbol\\] \\[price\\] \\- Create alert \\(e\\.g\\. /setalert BTC 50000\\)\n' +
+        '/clearalerts \\- Delete all alerts\n\n' +
+        '*⚙️ Settings:*\n' +
+        '/settings \\- Configure currency\\, interval\\, cryptos\n' +
+        '/stop \\- Stop all updates',
         { parse_mode: 'MarkdownV2' }
       );
     });
@@ -93,16 +101,157 @@ export class CommandHandlers {
   }
 
   private setupPriceCommand(): void {
-    this.bot.onText(/\/price/, async (msg) => {
+    this.bot.onText(/\/prices$/, async (msg) => {
       const chatId = msg.chat.id;
       
       try {
-        const priceData = await this.getEthereumPrice();
-        const message = await this.formatPriceMessage(priceData, chatId);
+        const settings = await this.getUserSettings(chatId);
+        const pricesData = await this.getCryptoPrices(settings.trackedCryptos);
+        const message = await this.formatPricesMessage(pricesData, chatId);
+        this.bot.sendMessage(chatId, message, { parse_mode: 'MarkdownV2' });
+      } catch (error) {
+        this.bot.sendMessage(chatId, '❌ Error fetching prices\\. Try again later\\.', { parse_mode: 'MarkdownV2' });
+      }
+    });
+
+    this.bot.onText(/\/price (.+)/, async (msg, match) => {
+      const chatId = msg.chat.id;
+      const symbol = match![1].trim().toUpperCase();
+      
+      try {
+        const crypto = PriceService.findCryptoBySymbol(symbol);
+        if (!crypto) {
+          this.bot.sendMessage(chatId, 
+            `❌ Cryptocurrency *${symbol}* not found\\.\n\nUse /list to see available cryptocurrencies\\.`, 
+            { parse_mode: 'MarkdownV2' }
+          );
+          return;
+        }
+        
+        const pricesData = await this.getCryptoPrices([crypto.id]);
+        const message = await this.formatPricesMessage(pricesData, chatId);
         this.bot.sendMessage(chatId, message, { parse_mode: 'MarkdownV2' });
       } catch (error) {
         this.bot.sendMessage(chatId, '❌ Error fetching price\\. Try again later\\.', { parse_mode: 'MarkdownV2' });
       }
+    });
+  }
+
+  private setupCryptoCommands(): void {
+    this.bot.onText(/\/cryptos/, async (msg) => {
+      const chatId = msg.chat.id;
+      const settings = await this.getUserSettings(chatId);
+      
+      const escapeText = (text: string) => text.replace(/[_*[\]()~`>#+=|{}.!-]/g, '\\$&');
+      let message = '🪙 *YOUR TRACKED CRYPTOCURRENCIES*\n\n';
+      
+      if (settings.trackedCryptos.length === 0) {
+        message += 'No cryptocurrencies tracked\\.\n\n';
+      } else {
+        settings.trackedCryptos.forEach((cryptoId, index) => {
+          const crypto = PriceService.findCryptoById(cryptoId);
+          if (crypto) {
+            message += `${index + 1}\\. ${escapeText(crypto.symbol)} \\- ${escapeText(crypto.name)}\n`;
+          }
+        });
+        message += '\n';
+      }
+      
+      message += '*Commands:*\n';
+      message += '/add \\[symbol\\] \\- Add cryptocurrency\n';
+      message += '/remove \\[symbol\\] \\- Remove cryptocurrency\n';
+      message += '/list \\- Show available cryptocurrencies';
+      
+      this.bot.sendMessage(chatId, message, { parse_mode: 'MarkdownV2' });
+    });
+
+    this.bot.onText(/\/add (.+)/, async (msg, match) => {
+      const chatId = msg.chat.id;
+      const symbol = match![1].trim().toUpperCase();
+      
+      const crypto = PriceService.findCryptoBySymbol(symbol);
+      if (!crypto) {
+        this.bot.sendMessage(chatId, 
+          `❌ Cryptocurrency *${symbol}* not found\\.\n\nUse /list to see available cryptocurrencies\\.`, 
+          { parse_mode: 'MarkdownV2' }
+        );
+        return;
+      }
+      
+      const settings = await this.getUserSettings(chatId);
+      
+      if (settings.trackedCryptos.includes(crypto.id)) {
+        this.bot.sendMessage(chatId, 
+          `❌ *${crypto.symbol}* is already being tracked\\.`, 
+          { parse_mode: 'MarkdownV2' }
+        );
+        return;
+      }
+      
+      if (settings.trackedCryptos.length >= 5) {
+        this.bot.sendMessage(chatId, 
+          '❌ Maximum 5 cryptocurrencies allowed\\. Remove some first with /remove\\.', 
+          { parse_mode: 'MarkdownV2' }
+        );
+        return;
+      }
+      
+      const newTrackedCryptos = [...settings.trackedCryptos, crypto.id];
+      await this.updateUserSettings(chatId, { trackedCryptos: newTrackedCryptos });
+      
+      const escapeText = (text: string) => text.replace(/[_*[\]()~`>#+=|{}.!-]/g, '\\$&');
+      this.bot.sendMessage(chatId, 
+        `✅ *${escapeText(crypto.symbol)}* \\(${escapeText(crypto.name)}\\) added to tracking\\!`, 
+        { parse_mode: 'MarkdownV2' }
+      );
+    });
+
+    this.bot.onText(/\/remove (.+)/, async (msg, match) => {
+      const chatId = msg.chat.id;
+      const symbol = match![1].trim().toUpperCase();
+      
+      const crypto = PriceService.findCryptoBySymbol(symbol);
+      if (!crypto) {
+        this.bot.sendMessage(chatId, 
+          `❌ Cryptocurrency *${symbol}* not found\\.`, 
+          { parse_mode: 'MarkdownV2' }
+        );
+        return;
+      }
+      
+      const settings = await this.getUserSettings(chatId);
+      
+      if (!settings.trackedCryptos.includes(crypto.id)) {
+        this.bot.sendMessage(chatId, 
+          `❌ *${crypto.symbol}* is not being tracked\\.`, 
+          { parse_mode: 'MarkdownV2' }
+        );
+        return;
+      }
+      
+      const newTrackedCryptos = settings.trackedCryptos.filter(id => id !== crypto.id);
+      await this.updateUserSettings(chatId, { trackedCryptos: newTrackedCryptos });
+      
+      const escapeText = (text: string) => text.replace(/[_*[\]()~`>#+=|{}.!-]/g, '\\$&');
+      this.bot.sendMessage(chatId, 
+        `🗑️ *${escapeText(crypto.symbol)}* removed from tracking\\.`, 
+        { parse_mode: 'MarkdownV2' }
+      );
+    });
+
+    this.bot.onText(/\/list/, (msg) => {
+      const chatId = msg.chat.id;
+      
+      const escapeText = (text: string) => text.replace(/[_*[\]()~`>#+=|{}.!-]/g, '\\$&');
+      let message = '📋 *AVAILABLE CRYPTOCURRENCIES*\n\n';
+      
+      PriceService.SUPPORTED_CRYPTOS.forEach((crypto, index) => {
+        message += `${escapeText(crypto.symbol)} \\- ${escapeText(crypto.name)}\n`;
+      });
+      
+      message += '\n*Usage:* /add \\[SYMBOL\\] to start tracking';
+      
+      this.bot.sendMessage(chatId, message, { parse_mode: 'MarkdownV2' });
     });
   }
 
@@ -164,12 +313,12 @@ export class CommandHandlers {
         return;
       }
       
-      const newAlert: Alert = { chatId, type, price, active: true };
+      const newAlert: Alert = { chatId, cryptoId: 'ethereum', type, price, active: true };
       userAlerts.push(newAlert);
       this.alerts.set(chatId, userAlerts);
       
       try {
-        await AlertModel.create({ chatId, type, price, active: true });
+        await AlertModel.create({ chatId, cryptoId: 'ethereum', type, price, active: true });
         console.log(`✅ Alert saved to database for chat ${chatId}`);
       } catch (error) {
         console.error('❌ Error saving alert to database:', error);
@@ -233,9 +382,9 @@ export class CommandHandlers {
   }
 
   private setupSettingsCommands(): void {
-    this.bot.onText(/\/interval/, (msg) => {
+    this.bot.onText(/\/interval/, async (msg) => {
       const chatId = msg.chat.id;
-      const currentInterval = this.userUpdateIntervals.get(chatId) || '1h';
+      const settings = await this.getUserSettings(chatId);
       
       const keyboard = {
         inline_keyboard: [
@@ -251,7 +400,7 @@ export class CommandHandlers {
       };
       
       this.bot.sendMessage(chatId, 
-        `⚙️ *UPDATE FREQUENCY*\n\nCurrent: *${this.getIntervalText(currentInterval)}*\n\nSelect new frequency:`,
+        `⚙️ *UPDATE FREQUENCY*\n\nCurrent: *${this.getIntervalText(settings.updateInterval)}*\n\nSelect new frequency:`,
         { parse_mode: 'MarkdownV2', reply_markup: keyboard }
       );
     });
@@ -290,7 +439,7 @@ export class CommandHandlers {
       
       if (data?.startsWith('interval_')) {
         const newInterval = data.replace('interval_', '') as UpdateInterval;
-        this.userUpdateIntervals.set(chatId, newInterval);
+        await this.updateUserSettings(chatId, { updateInterval: newInterval });
         
         this.bot.answerCallbackQuery(callbackQuery.id, { 
           text: `Frequency changed to ${this.getIntervalText(newInterval)}` 

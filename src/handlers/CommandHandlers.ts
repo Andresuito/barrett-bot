@@ -1,7 +1,8 @@
 import TelegramBot from 'node-telegram-bot-api';
-import { Alert, UpdateInterval, UserSettings, PriceData, CryptoCurrency } from '../interfaces';
+import { Alert, UpdateInterval, UserSettings, PriceData, CryptoCurrency, Wallet, WalletBalance } from '../interfaces';
 import { Alert as AlertModel } from '../models/Alert';
-import { PriceService } from '../services';
+import { Wallet as WalletModel } from '../models/Wallet';
+import { PriceService, WalletService } from '../services';
 import { MessageFormatter } from '../utils';
 
 export class CommandHandlers {
@@ -39,6 +40,7 @@ export class CommandHandlers {
     this.setupCryptoCommands();
     this.setupAlertsCommands();
     this.setupSettingsCommands();
+    this.setupWalletCommands();
     this.setupCallbackHandlers();
   }
 
@@ -73,6 +75,10 @@ export class CommandHandlers {
         '*📊 Price Commands:*\n' +
         '/prices \\- Current prices of tracked cryptos\n' +
         '/price \\[symbol\\] \\- Single crypto price \\(e\\.g\\. /price BTC\\)\n\n' +
+        '*💼 Wallet Commands:*\n' +
+        '/addwallet \\[address\\] \\- Add wallet to track \\(e\\.g\\. /addwallet 0x1234\\.\\.\\.\\)\n' +
+        '/wallet \\[address\\] \\- Check wallet balance\n' +
+        '/wallets \\- List your saved wallets\n\n' +
         '*🔔 Alerts:*\n' +
         '/alerts \\- Manage price alerts\n' +
         '/setalert \\[crypto\\] \\[price\\] \\- Create alert \\(e\\.g\\. /setalert BTC 50000\\)\n' +
@@ -873,6 +879,188 @@ export class CommandHandlers {
       });
       
       await this.showEmergencySettings(chatId, message!.message_id);
+    }
+  }
+
+  private setupWalletCommands(): void {
+    // Add wallet command with auto-detection
+    this.bot.onText(/\/addwallet(?:\s+(.+))?/, async (msg, match) => {
+      const chatId = msg.chat.id;
+      const input = match?.[1]?.trim();
+
+      if (!input) {
+        this.bot.sendMessage(chatId, 
+          'Please provide a wallet address\\.\n' +
+          '*Usage:* `/addwallet [address]`\n' +
+          '*Supported:* Bitcoin, Ethereum, BSC, Solana\n\n' +
+          '*Examples:*\n' +
+          '`/addwallet 1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa` \\(Bitcoin\\)\n' +
+          '`/addwallet 0xB0Aa611f8a76C841B6Df59E41De02cCd5cb97527` \\(Ethereum\\)', 
+          { parse_mode: 'MarkdownV2' }
+        );
+        return;
+      }
+
+      // Auto-detect network
+      const detectedNetwork = WalletService.detectAddressNetwork(input);
+      if (!detectedNetwork) {
+        this.bot.sendMessage(chatId, 
+          '❌ Invalid or unsupported address format\\.\n' +
+          '*Supported networks:* Bitcoin, Ethereum, BSC, Solana', 
+          { parse_mode: 'MarkdownV2' }
+        );
+        return;
+      }
+
+      try {
+        const existingWallet = await WalletModel.findOne({ 
+          chatId, 
+          address: input.toLowerCase(), 
+          network: detectedNetwork 
+        });
+        
+        if (existingWallet) {
+          this.bot.sendMessage(chatId, '⚠️ This wallet is already added\\!', { parse_mode: 'MarkdownV2' });
+          return;
+        }
+
+        const wallet = new WalletModel({
+          chatId,
+          address: input.toLowerCase(),
+          network: detectedNetwork
+        });
+
+        await wallet.save();
+        
+        const networkEmoji = this.getNetworkEmoji(detectedNetwork);
+        this.bot.sendMessage(chatId, 
+          `✅ Wallet added successfully\\!\n` +
+          `${networkEmoji} *Network:* ${MessageFormatter.escapeMarkdown(detectedNetwork.toUpperCase())}\n` +
+          `📍 *Address:* \`${MessageFormatter.escapeMarkdown(input.slice(0, 12) + '...' + input.slice(-8))}\``, 
+          { parse_mode: 'MarkdownV2' }
+        );
+      } catch (error) {
+        console.error('Error adding wallet:', error);
+        this.bot.sendMessage(chatId, '❌ Error adding wallet\\. Please try again\\.', { parse_mode: 'MarkdownV2' });
+      }
+    });
+
+    // Check wallet balance command
+    this.bot.onText(/\/wallet(?:\s+(.+))?/, async (msg, match) => {
+      const chatId = msg.chat.id;
+      const address = match?.[1]?.trim();
+
+      if (!address) {
+        this.bot.sendMessage(chatId, 
+          'Please provide a wallet address\\.\n' +
+          '*Usage:* `/wallet [address]`\n' +
+          '*Supported:* Bitcoin, Ethereum, BSC, Solana', 
+          { parse_mode: 'MarkdownV2' }
+        );
+        return;
+      }
+
+      // Auto-detect network
+      const detectedNetwork = WalletService.detectAddressNetwork(address);
+      if (!detectedNetwork) {
+        this.bot.sendMessage(chatId, 
+          '❌ Invalid or unsupported address format\\.\n' +
+          '*Supported networks:* Bitcoin, Ethereum, BSC, Solana', 
+          { parse_mode: 'MarkdownV2' }
+        );
+        return;
+      }
+
+      const networkEmoji = this.getNetworkEmoji(detectedNetwork);
+      const loadingMsg = await this.bot.sendMessage(chatId, 
+        `🔍 Checking ${networkEmoji} ${detectedNetwork.toUpperCase()} balance\\.\\.\\.`, 
+        { parse_mode: 'MarkdownV2' }
+      );
+
+      try {
+        const balance = await WalletService.getWalletBalance(address, detectedNetwork);
+        
+        if (!balance) {
+          await this.bot.editMessageText('❌ Error fetching wallet balance\\. Please try again later\\.', {
+            chat_id: chatId,
+            message_id: loadingMsg.message_id,
+            parse_mode: 'MarkdownV2'
+          });
+          return;
+        }
+
+        const settings = await this.getUserSettings(chatId);
+        const currencySymbol = settings.currency === 'usd' ? '$' : '€';
+        const fiatValue = settings.currency === 'usd' ? balance.balanceUsd : balance.balanceEur;
+
+        const shortAddress = address.length > 20 ? 
+          `${address.slice(0, 8)}...${address.slice(-6)}` : address;
+
+        const message = 
+          `💰 *Wallet Balance*\\n\\n` +
+          `${networkEmoji} *Network:* ${MessageFormatter.escapeMarkdown(balance.network)}\\n` +
+          `📍 *Address:* \`${MessageFormatter.escapeMarkdown(shortAddress)}\`\\n` +
+          `🪙 *Balance:* ${MessageFormatter.escapeMarkdown(balance.balance.toFixed(6))} ${balance.symbol}\\n` +
+          `💵 *Value:* ${currencySymbol}${MessageFormatter.escapeMarkdown(fiatValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }))}`;
+
+        await this.bot.editMessageText(message, {
+          chat_id: chatId,
+          message_id: loadingMsg.message_id,
+          parse_mode: 'MarkdownV2'
+        });
+      } catch (error) {
+        console.error('Error fetching wallet balance:', error);
+        await this.bot.editMessageText('❌ Error fetching wallet balance\\. Please try again later\\.', {
+          chat_id: chatId,
+          message_id: loadingMsg.message_id,
+          parse_mode: 'MarkdownV2'
+        });
+      }
+    });
+
+    // List saved wallets command
+    this.bot.onText(/\/wallets/, async (msg) => {
+      const chatId = msg.chat.id;
+
+      try {
+        const wallets = await WalletModel.find({ chatId });
+
+        if (wallets.length === 0) {
+          this.bot.sendMessage(chatId, '📪 No wallets added yet\\. Use `/addwallet` to add one\\!', { parse_mode: 'MarkdownV2' });
+          return;
+        }
+
+        let message = '💼 *Your Wallets*\\n\\n';
+        
+        for (const wallet of wallets) {
+          const shortAddress = wallet.address.length > 20 ? 
+            `${wallet.address.slice(0, 8)}...${wallet.address.slice(-6)}` : wallet.address;
+          const networkEmoji = this.getNetworkEmoji(wallet.network);
+          message += `${networkEmoji} ${MessageFormatter.escapeMarkdown(wallet.network.toUpperCase())} \`${MessageFormatter.escapeMarkdown(shortAddress)}\`\\n`;
+        }
+
+        message += `\\n💡 Use \`/wallet [address]\` to check balance`;
+
+        this.bot.sendMessage(chatId, message, { parse_mode: 'MarkdownV2' });
+      } catch (error) {
+        console.error('Error fetching wallets:', error);
+        this.bot.sendMessage(chatId, '❌ Error fetching wallets\\. Please try again\\.', { parse_mode: 'MarkdownV2' });
+      }
+    });
+  }
+
+  private getNetworkEmoji(network: string): string {
+    switch (network.toLowerCase()) {
+      case 'ethereum':
+        return '🔷';
+      case 'bitcoin':
+        return '₿';
+      case 'bsc':
+        return '🟡';
+      case 'solana':
+        return '🟣';
+      default:
+        return '🔗';
     }
   }
 

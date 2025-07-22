@@ -304,10 +304,9 @@ class BarrettBot {
       await this.checkForExtremeMovements();
     });
 
-    // Clean up old emergency alert cache every hour
     cron.schedule('0 * * * *', () => {
       const now = Date.now();
-      const fourHoursAgo = now - 14400000; // 4 hours
+      const fourHoursAgo = now - 14400000;
       for (const [key, timestamp] of this.recentEmergencyAlerts.entries()) {
         if (timestamp < fourHoursAgo) {
           this.recentEmergencyAlerts.delete(key);

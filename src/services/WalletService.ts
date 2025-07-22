@@ -2,10 +2,11 @@ import axios, { AxiosError } from 'axios';
 import { WalletBalance } from '../interfaces';
 
 export class WalletService {
-  private static readonly BLOCKCHAIR_API = 'https://api.blockchair.com';
+  // Multiple API providers for better reliability (no env variables needed)
+  
   private static readonly COINGECKO_PRICE_API = 'https://api.coingecko.com/api/v3/simple/price';
   private static lastRequestTime = 0;
-  private static readonly RATE_LIMIT_DELAY = 1000; // 1 second between requests
+  private static readonly RATE_LIMIT_DELAY = 500; // Reduced delay with multiple APIs
 
   private static async rateLimitedRequest<T>(requestFn: () => Promise<T>, maxRetries = 3): Promise<T> {
     const now = Date.now();
@@ -52,197 +53,284 @@ export class WalletService {
   }
 
   static async getWalletBalance(address: string, network: string): Promise<WalletBalance | null> {
+    console.log(`🔍 Fetching ${network} balance for ${address.slice(0,8)}...${address.slice(-6)}`);
+    
     try {
       switch (network.toLowerCase()) {
         case 'ethereum':
-          return await this.getEthereumBalance(address);
+          return await this.getEthereumBalanceWithRetry(address);
         case 'bitcoin':
-          return await this.getBitcoinBalance(address);
+          return await this.getBitcoinBalanceWithRetry(address);
         case 'bsc':
-          return await this.getBSCBalance(address);
+          return await this.getBSCBalanceWithRetry(address);
         case 'solana':
-          return await this.getSolanaBalance(address);
+          return await this.getSolanaBalanceWithRetry(address);
         default:
           throw new Error(`Unsupported network: ${network}`);
       }
     } catch (error) {
-      console.error(`Error fetching ${network} balance:`, error);
+      console.error(`❌ Error fetching ${network} balance:`, error);
       return null;
     }
   }
 
-  private static async getEthereumBalance(address: string): Promise<WalletBalance | null> {
+  private static async getEthereumBalanceWithRetry(address: string): Promise<WalletBalance | null> {
+    // Try Etherscan first (most reliable)
     try {
-      // Using Blockchair API with rate limiting
+      console.log('🔷 Trying Etherscan API...');
       const balanceResponse = await this.rateLimitedRequest(() =>
-        axios.get(`${this.BLOCKCHAIR_API}/ethereum/dashboards/address/${address}`, {
-          timeout: 15000
-        })
-      );
-
-      if (!balanceResponse.data?.data?.[address]) {
-        throw new Error('Invalid response from Blockchair');
-      }
-
-      const addressData = balanceResponse.data.data[address].address;
-      const balanceWei = addressData.balance;
-      const balanceEth = parseFloat(balanceWei) / Math.pow(10, 18);
-
-      // Get ETH price with rate limiting
-      const priceResponse = await this.rateLimitedRequest(() =>
-        axios.get(`${this.COINGECKO_PRICE_API}?ids=ethereum&vs_currencies=usd,eur`, {
-          timeout: 15000
-        })
-      );
-
-      const ethPriceUsd = priceResponse.data.ethereum.usd;
-      const ethPriceEur = priceResponse.data.ethereum.eur;
-
-      return {
-        address,
-        network: 'Ethereum',
-        balance: balanceEth,
-        balanceUsd: balanceEth * ethPriceUsd,
-        balanceEur: balanceEth * ethPriceEur,
-        symbol: 'ETH'
-      };
-    } catch (error) {
-      console.error('Error fetching Ethereum balance:', error);
-      return null;
-    }
-  }
-
-  private static async getBitcoinBalance(address: string): Promise<WalletBalance | null> {
-    try {
-      const balanceResponse = await this.rateLimitedRequest(() =>
-        axios.get(`${this.BLOCKCHAIR_API}/bitcoin/dashboards/address/${address}`, {
-          timeout: 15000
-        })
-      );
-
-      if (!balanceResponse.data?.data?.[address]) {
-        throw new Error('Invalid response from Blockchair');
-      }
-
-      const addressData = balanceResponse.data.data[address].address;
-      const balanceSatoshi = addressData.balance;
-      const balanceBtc = balanceSatoshi / 100000000; // Convert satoshi to BTC
-
-      // Get BTC price with rate limiting
-      const priceResponse = await this.rateLimitedRequest(() =>
-        axios.get(`${this.COINGECKO_PRICE_API}?ids=bitcoin&vs_currencies=usd,eur`, {
-          timeout: 15000
-        })
-      );
-
-      const btcPriceUsd = priceResponse.data.bitcoin.usd;
-      const btcPriceEur = priceResponse.data.bitcoin.eur;
-
-      return {
-        address,
-        network: 'Bitcoin',
-        balance: balanceBtc,
-        balanceUsd: balanceBtc * btcPriceUsd,
-        balanceEur: balanceBtc * btcPriceEur,
-        symbol: 'BTC'
-      };
-    } catch (error) {
-      console.error('Error fetching Bitcoin balance:', error);
-      return null;
-    }
-  }
-
-  private static async getBSCBalance(address: string): Promise<WalletBalance | null> {
-    try {
-      // BSC uses BSCScan API with rate limiting
-      const balanceResponse = await this.rateLimitedRequest(() =>
-        axios.get(`https://api.bscscan.com/api`, {
+        axios.get('https://api.etherscan.io/api', {
           params: {
             module: 'account',
             action: 'balance',
             address: address,
             tag: 'latest'
           },
-          timeout: 15000
+          timeout: 8000
         })
       );
-
-      if (balanceResponse.data.status !== '1') {
-        throw new Error('Failed to fetch balance from BSCScan');
+      
+      if (balanceResponse.data.status === '1') {
+        const balanceWei = balanceResponse.data.result;
+        const balanceEth = parseFloat(balanceWei) / Math.pow(10, 18);
+        console.log('✅ Etherscan successful');
+        return await this.addPriceData(address, 'Ethereum', balanceEth, 'ETH', 'ethereum');
       }
-
-      const balanceWei = balanceResponse.data.result;
-      const balanceBnb = parseFloat(balanceWei) / Math.pow(10, 18);
-
-      // Get BNB price with rate limiting
-      const priceResponse = await this.rateLimitedRequest(() =>
-        axios.get(`${this.COINGECKO_PRICE_API}?ids=binancecoin&vs_currencies=usd,eur`, {
-          timeout: 15000
+    } catch (error) {
+      console.warn('⚠️ Etherscan failed, trying BlockCypher...');
+    }
+    
+    // Try BlockCypher API
+    try {
+      console.log('🔷 Trying BlockCypher API...');
+      const balanceResponse = await this.rateLimitedRequest(() =>
+        axios.get(`https://api.blockcypher.com/v1/eth/main/addrs/${address}/balance`, {
+          timeout: 8000
         })
       );
-
-      const bnbPriceUsd = priceResponse.data.binancecoin.usd;
-      const bnbPriceEur = priceResponse.data.binancecoin.eur;
-
-      return {
-        address,
-        network: 'BSC',
-        balance: balanceBnb,
-        balanceUsd: balanceBnb * bnbPriceUsd,
-        balanceEur: balanceBnb * bnbPriceEur,
-        symbol: 'BNB'
-      };
+      
+      if (balanceResponse.data.balance !== undefined) {
+        const balanceWei = balanceResponse.data.balance;
+        const balanceEth = balanceWei / Math.pow(10, 18);
+        console.log('✅ BlockCypher successful');
+        return await this.addPriceData(address, 'Ethereum', balanceEth, 'ETH', 'ethereum');
+      }
     } catch (error) {
-      console.error('Error fetching BSC balance:', error);
-      return null;
+      console.warn('⚠️ BlockCypher failed, trying Blockchair...');
     }
+    
+    // Fallback to Blockchair
+    try {
+      console.log('🔷 Trying Blockchair API...');
+      const balanceResponse = await this.rateLimitedRequest(() =>
+        axios.get(`https://api.blockchair.com/ethereum/dashboards/address/${address}`, {
+          timeout: 10000
+        })
+      );
+      
+      if (balanceResponse.data?.data?.[address]) {
+        const addressData = balanceResponse.data.data[address].address;
+        const balanceWei = addressData.balance;
+        const balanceEth = parseFloat(balanceWei) / Math.pow(10, 18);
+        console.log('✅ Blockchair successful');
+        return await this.addPriceData(address, 'Ethereum', balanceEth, 'ETH', 'ethereum');
+      }
+    } catch (error) {
+      console.error('❌ All Ethereum APIs failed');
+    }
+    
+    return null;
   }
 
-  private static async getSolanaBalance(address: string): Promise<WalletBalance | null> {
+  private static async getBitcoinBalanceWithRetry(address: string): Promise<WalletBalance | null> {
+    // Try BlockCypher first (very reliable for Bitcoin)
     try {
-      // Using Solana public RPC with rate limiting
-      const response = await this.rateLimitedRequest(() =>
-        axios.post('https://api.mainnet-beta.solana.com', {
-          jsonrpc: '2.0',
-          id: 1,
-          method: 'getBalance',
-          params: [address]
-        }, {
-          timeout: 15000,
-          headers: {
-            'Content-Type': 'application/json',
-          }
+      console.log('₿ Trying BlockCypher API...');
+      const balanceResponse = await this.rateLimitedRequest(() =>
+        axios.get(`https://api.blockcypher.com/v1/btc/main/addrs/${address}/balance`, {
+          timeout: 8000
         })
       );
-
-      if (response.data.error) {
-        throw new Error(response.data.error.message);
+      
+      if (balanceResponse.data.balance !== undefined) {
+        const balanceSatoshi = balanceResponse.data.balance;
+        const balanceBtc = balanceSatoshi / 100000000;
+        console.log('✅ BlockCypher successful');
+        return await this.addPriceData(address, 'Bitcoin', balanceBtc, 'BTC', 'bitcoin');
       }
-
-      const balanceLamports = response.data.result.value;
-      const balanceSol = balanceLamports / Math.pow(10, 9); // Convert lamports to SOL
-
-      // Get SOL price with rate limiting
-      const priceResponse = await this.rateLimitedRequest(() =>
-        axios.get(`${this.COINGECKO_PRICE_API}?ids=solana&vs_currencies=usd,eur`, {
-          timeout: 15000
+    } catch (error) {
+      console.warn('⚠️ BlockCypher failed, trying Blockstream...');
+    }
+    
+    // Try Blockstream API
+    try {
+      console.log('₿ Trying Blockstream API...');
+      const balanceResponse = await this.rateLimitedRequest(() =>
+        axios.get(`https://blockstream.info/api/address/${address}`, {
+          timeout: 8000
         })
       );
+      
+      const chainStats = balanceResponse.data.chain_stats;
+      if (chainStats) {
+        const balanceSatoshi = chainStats.funded_txo_sum - chainStats.spent_txo_sum;
+        const balanceBtc = balanceSatoshi / 100000000;
+        console.log('✅ Blockstream successful');
+        return await this.addPriceData(address, 'Bitcoin', balanceBtc, 'BTC', 'bitcoin');
+      }
+    } catch (error) {
+      console.warn('⚠️ Blockstream failed, trying Blockchair...');
+    }
+    
+    // Fallback to Blockchair
+    try {
+      console.log('₿ Trying Blockchair API...');
+      const balanceResponse = await this.rateLimitedRequest(() =>
+        axios.get(`https://api.blockchair.com/bitcoin/dashboards/address/${address}`, {
+          timeout: 10000
+        })
+      );
+      
+      if (balanceResponse.data?.data?.[address]) {
+        const addressData = balanceResponse.data.data[address].address;
+        const balanceSatoshi = addressData.balance;
+        const balanceBtc = balanceSatoshi / 100000000;
+        console.log('✅ Blockchair successful');
+        return await this.addPriceData(address, 'Bitcoin', balanceBtc, 'BTC', 'bitcoin');
+      }
+    } catch (error) {
+      console.error('❌ All Bitcoin APIs failed');
+    }
+    
+    return null;
+  }
 
-      const solPriceUsd = priceResponse.data.solana.usd;
-      const solPriceEur = priceResponse.data.solana.eur;
+  private static async getBSCBalanceWithRetry(address: string): Promise<WalletBalance | null> {
+    // Try BSCScan API first
+    try {
+      console.log('🟡 Trying BSCScan API...');
+      const balanceResponse = await this.rateLimitedRequest(() =>
+        axios.get('https://api.bscscan.com/api', {
+          params: {
+            module: 'account',
+            action: 'balance',
+            address: address,
+            tag: 'latest'
+          },
+          timeout: 8000
+        })
+      );
+      
+      if (balanceResponse.data.status === '1') {
+        const balanceWei = balanceResponse.data.result;
+        const balanceBnb = parseFloat(balanceWei) / Math.pow(10, 18);
+        console.log('✅ BSCScan successful');
+        return await this.addPriceData(address, 'BSC', balanceBnb, 'BNB', 'binancecoin');
+      }
+    } catch (error) {
+      console.warn('⚠️ BSCScan failed, trying direct RPC...');
+    }
+    
+    // Try direct RPC call to BSC node
+    try {
+      console.log('🟡 Trying BSC RPC...');
+      const balanceResponse = await this.rateLimitedRequest(() =>
+        axios.post('https://bsc-dataseed1.binance.org', {
+          jsonrpc: '2.0',
+          method: 'eth_getBalance',
+          params: [address, 'latest'],
+          id: 1
+        }, {
+          timeout: 8000,
+          headers: { 'Content-Type': 'application/json' }
+        })
+      );
+      
+      if (balanceResponse.data.result) {
+        const balanceWei = parseInt(balanceResponse.data.result, 16);
+        const balanceBnb = balanceWei / Math.pow(10, 18);
+        console.log('✅ BSC RPC successful');
+        return await this.addPriceData(address, 'BSC', balanceBnb, 'BNB', 'binancecoin');
+      }
+    } catch (error) {
+      console.error('❌ All BSC APIs failed');
+    }
+    
+    return null;
+  }
 
+  private static async getSolanaBalanceWithRetry(address: string): Promise<WalletBalance | null> {
+    const rpcEndpoints = [
+      'https://api.mainnet-beta.solana.com',
+      'https://solana-api.projectserum.com',
+      'https://rpc.ankr.com/solana'
+    ];
+    
+    for (let i = 0; i < rpcEndpoints.length; i++) {
+      try {
+        console.log(`🟣 Trying Solana RPC ${i + 1}...`);
+        const response = await this.rateLimitedRequest(() =>
+          axios.post(rpcEndpoints[i], {
+            jsonrpc: '2.0',
+            id: 1,
+            method: 'getBalance',
+            params: [address]
+          }, {
+            timeout: 8000,
+            headers: { 'Content-Type': 'application/json' }
+          })
+        );
+        
+        if (!response.data.error && response.data.result) {
+          const balanceLamports = response.data.result.value;
+          const balanceSol = balanceLamports / Math.pow(10, 9);
+          console.log('✅ Solana RPC successful');
+          return await this.addPriceData(address, 'Solana', balanceSol, 'SOL', 'solana');
+        }
+      } catch (error) {
+        console.warn(`⚠️ Solana RPC ${i + 1} failed, trying next...`);
+        if (i === rpcEndpoints.length - 1) {
+          console.error('❌ All Solana RPCs failed');
+        }
+      }
+    }
+    
+    return null;
+  }
+  
+  private static async addPriceData(
+    address: string, 
+    network: string, 
+    balance: number, 
+    symbol: string, 
+    coingeckoId: string
+  ): Promise<WalletBalance> {
+    try {
+      const priceResponse = await this.rateLimitedRequest(() =>
+        axios.get(`${this.COINGECKO_PRICE_API}?ids=${coingeckoId}&vs_currencies=usd,eur`, {
+          timeout: 5000
+        })
+      );
+      
+      const priceData = priceResponse.data[coingeckoId];
       return {
         address,
-        network: 'Solana',
-        balance: balanceSol,
-        balanceUsd: balanceSol * solPriceUsd,
-        balanceEur: balanceSol * solPriceEur,
-        symbol: 'SOL'
+        network,
+        balance,
+        balanceUsd: balance * priceData.usd,
+        balanceEur: balance * priceData.eur,
+        symbol
       };
     } catch (error) {
-      console.error('Error fetching Solana balance:', error);
-      return null;
+      console.warn('⚠️ Price fetch failed, using 0 prices');
+      return {
+        address,
+        network,
+        balance,
+        balanceUsd: 0,
+        balanceEur: 0,
+        symbol
+      };
     }
   }
 

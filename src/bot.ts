@@ -200,8 +200,8 @@ class BarrettBot {
             const absChange = Math.abs(change24h).toFixed(1);
             const direction = change24h > 0 ? 'UP' : 'DOWN';
             
-            let alertMessage = `🚨 *${alertType} ALERT*\\n\\n${emoji} ${crypto.emoji} *${MessageFormatter.escapeMarkdown(crypto.symbol)}* moved *${absChange}%* ${direction}\\!\\n\\n`;
-            alertMessage += `💰 Current: ${currencySymbol}${MessageFormatter.escapeMarkdown(currentPrice.toLocaleString())}\\n`;
+            let alertMessage = `🚨 *${alertType} ALERT*\n\n${emoji} ${crypto.emoji} *${MessageFormatter.escapeMarkdown(crypto.symbol)}* moved *${absChange}%* ${direction}\\!\n\n`;
+            alertMessage += `💰 Current: ${currencySymbol}${MessageFormatter.escapeMarkdown(currentPrice.toLocaleString())}\n`;
             alertMessage += `📊 24h: ${change24h > 0 ? '\\+' : ''}${change24h.toFixed(1)}%`;
             
             try {
@@ -248,10 +248,10 @@ class BarrettBot {
           
           if (alert.type === 'above' && currentPrice >= alert.price) {
             shouldTrigger = true;
-            alertMessage = `🚨 *PRICE ALERT*\\n\\n📈 ${cryptoName} is now *above* ${currencySymbol}${MessageFormatter.escapeMarkdown(alert.price.toLocaleString())}\\n💰 Current: ${currencySymbol}${MessageFormatter.escapeMarkdown(currentPrice.toLocaleString())}`;
+            alertMessage = `🚨 *PRICE ALERT*\n\n📈 ${cryptoName} is now *above* ${currencySymbol}${MessageFormatter.escapeMarkdown(alert.price.toLocaleString())}\n💰 Current: ${currencySymbol}${MessageFormatter.escapeMarkdown(currentPrice.toLocaleString())}`;
           } else if (alert.type === 'below' && currentPrice <= alert.price) {
             shouldTrigger = true;
-            alertMessage = `🚨 *PRICE ALERT*\\n\\n📉 ${cryptoName} is now *below* ${currencySymbol}${MessageFormatter.escapeMarkdown(alert.price.toLocaleString())}\\n💰 Current: ${currencySymbol}${MessageFormatter.escapeMarkdown(currentPrice.toLocaleString())}`;
+            alertMessage = `🚨 *PRICE ALERT*\n\n📉 ${cryptoName} is now *below* ${currencySymbol}${MessageFormatter.escapeMarkdown(alert.price.toLocaleString())}\n💰 Current: ${currencySymbol}${MessageFormatter.escapeMarkdown(currentPrice.toLocaleString())}`;
           }
           
           if (shouldTrigger) {

@@ -2,6 +2,7 @@ import TelegramBot from 'node-telegram-bot-api';
 import { Alert, UpdateInterval, UserSettings, PriceData, CryptoCurrency, Wallet, WalletBalance } from '../interfaces';
 import { Alert as AlertModel } from '../models/Alert';
 import { Wallet as WalletModel } from '../models/Wallet';
+import { PortfolioEntry } from '../models/Portfolio';
 import { PriceService, WalletService } from '../services';
 import { MessageFormatter } from '../utils';
 
@@ -79,6 +80,11 @@ export class CommandHandlers {
         '/addwallet \\[address\\] \\- Add wallet to track \\(e\\.g\\. /addwallet 0x1234\\.\\.\\.\\)\n' +
         '/wallet \\[address\\] \\- Check wallet balance\n' +
         '/wallets \\- List your saved wallets\n\n' +
+        '*📈 Portfolio Commands:*\n' +
+        '/buy \\[crypto\\] \\[amount\\] \\[price\\] \\- Add purchase \\(e\\.g\\. /buy ETH 0\\.5 3800\\)\n' +
+        '/sell \\[crypto\\] \\[amount\\] \\[price\\] \\- Add sale \\(e\\.g\\. /sell ETH 0\\.2 4000\\)\n' +
+        '/portfolio \\- View your portfolio with P\\&L\n' +
+        '/clearportfolio \\[crypto\\] \\- Clear portfolio entries\n\n' +
         '*🔔 Alerts:*\n' +
         '/alerts \\- Manage price alerts\n' +
         '/setalert \\[crypto\\] \\[price\\] \\- Create alert \\(e\\.g\\. /setalert BTC 50000\\)\n' +
@@ -111,7 +117,61 @@ export class CommandHandlers {
       try {
         const settings = await this.getUserSettings(chatId);
         const pricesData = await this.getCryptoPrices(settings.trackedCryptos);
-        const message = await this.formatPricesMessage(pricesData, chatId);
+        
+        // Check if user has portfolio entries
+        const portfolioEntries = await PortfolioEntry.find({ chatId });
+        let message = await this.formatPricesMessage(pricesData, chatId);
+        
+        if (portfolioEntries.length > 0) {
+          // Calculate portfolio holdings
+          const holdings = new Map<string, { amount: number, totalCost: number, totalReceived: number }>();
+          
+          for (const entry of portfolioEntries) {
+            const current = holdings.get(entry.cryptoId) || { amount: 0, totalCost: 0, totalReceived: 0 };
+            
+            if (entry.type === 'buy') {
+              current.amount += entry.amount;
+              current.totalCost += entry.amount * entry.price;
+            } else {
+              current.amount -= entry.amount;
+              current.totalReceived += entry.amount * entry.price;
+            }
+            
+            holdings.set(entry.cryptoId, current);
+          }
+          
+          // Add portfolio summary for tracked cryptos that have holdings
+          let portfolioSummary = '\n\n*💼 Your Holdings:*\n';
+          let hasHoldings = false;
+          const currencySymbol = settings.currency === 'usd' ? '$' : '€';
+          
+          for (const priceData of pricesData) {
+            const crypto = PriceService.findCryptoBySymbol(priceData.symbol);
+            if (!crypto) continue;
+            
+            const holding = holdings.get(crypto.id);
+            if (holding && holding.amount > 0.000001) {
+              const currentPrice = settings.currency === 'usd' ? priceData.priceUsd : priceData.priceEur;
+              const netCost = holding.totalCost - holding.totalReceived;
+              const currentValue = holding.amount * currentPrice;
+              const unrealizedPL = currentValue - netCost;
+              const unrealizedPLPercent = netCost > 0 ? (unrealizedPL / netCost) * 100 : 0;
+              
+              const plEmoji = unrealizedPL >= 0 ? '📈' : '📉';
+              const plSign = unrealizedPL >= 0 ? '+' : '';
+              
+              portfolioSummary += `${crypto.emoji} ${MessageFormatter.escapeMarkdown(holding.amount.toFixed(6))} ${crypto.symbol} `;
+              portfolioSummary += `${plEmoji} ${plSign}${currencySymbol}${MessageFormatter.escapeMarkdown(Math.abs(unrealizedPL).toLocaleString())} \\(${plSign}${MessageFormatter.escapeMarkdown(unrealizedPLPercent.toFixed(1))}%\\)\n`;
+              hasHoldings = true;
+            }
+          }
+          
+          if (hasHoldings) {
+            portfolioSummary += '\n💡 Use `/portfolio` for detailed P\\&L analysis';
+            message += portfolioSummary;
+          }
+        }
+        
         this.bot.sendMessage(chatId, message, { parse_mode: 'MarkdownV2' });
       } catch (error) {
         this.bot.sendMessage(chatId, '❌ Error fetching prices\\. Try again later\\.', { parse_mode: 'MarkdownV2' });
@@ -997,7 +1057,7 @@ export class CommandHandlers {
           `${address.slice(0, 8)}...${address.slice(-6)}` : address;
 
         const message = 
-          `💰 *Wallet Balance*\\n\\n` +
+          `💰 *Wallet Balance*\n\n` +
           `${networkEmoji} *Network:* ${MessageFormatter.escapeMarkdown(balance.network)}\\n` +
           `📍 *Address:* \`${MessageFormatter.escapeMarkdown(shortAddress)}\`\\n` +
           `🪙 *Balance:* ${MessageFormatter.escapeMarkdown(balance.balance.toFixed(6))} ${balance.symbol}\\n` +
@@ -1030,7 +1090,7 @@ export class CommandHandlers {
           return;
         }
 
-        let message = '💼 *Your Wallets*\\n\\n';
+        let message = '💼 *Your Wallets*\n\n';
         
         for (const wallet of wallets) {
           const shortAddress = wallet.address.length > 20 ? 
@@ -1045,6 +1105,219 @@ export class CommandHandlers {
       } catch (error) {
         console.error('Error fetching wallets:', error);
         this.bot.sendMessage(chatId, '❌ Error fetching wallets\\. Please try again\\.', { parse_mode: 'MarkdownV2' });
+      }
+    });
+
+    // Portfolio buy command
+    this.bot.onText(/\/buy (\w+) ([0-9.]+) ([0-9.]+)/, async (msg, match) => {
+      const chatId = msg.chat.id;
+      const symbol = match![1].toUpperCase();
+      const amount = parseFloat(match![2]);
+      const price = parseFloat(match![3]);
+
+      try {
+        const crypto = PriceService.findCryptoBySymbol(symbol);
+        if (!crypto) {
+          this.bot.sendMessage(chatId, `❌ Cryptocurrency *${MessageFormatter.escapeMarkdown(symbol)}* not found\\. Use \`/list\` to see available cryptos\\.`, { parse_mode: 'MarkdownV2' });
+          return;
+        }
+
+        if (amount <= 0 || price <= 0) {
+          this.bot.sendMessage(chatId, '❌ Amount and price must be positive numbers\\.', { parse_mode: 'MarkdownV2' });
+          return;
+        }
+
+        const portfolioEntry = new PortfolioEntry({
+          chatId,
+          cryptoId: crypto.id,
+          type: 'buy',
+          amount,
+          price
+        });
+
+        await portfolioEntry.save();
+
+        this.bot.sendMessage(chatId, 
+          `✅ *Purchase Added*\n\n` +
+          `${crypto.emoji} *${crypto.symbol}:* ${amount} at $${price.toLocaleString()}\n` +
+          `💰 *Total Cost:* $${(amount * price).toLocaleString()}\n\n` +
+          `Use \`/portfolio\` to view your complete portfolio\\.`,
+          { parse_mode: 'MarkdownV2' }
+        );
+      } catch (error) {
+        console.error('Error adding purchase:', error);
+        this.bot.sendMessage(chatId, '❌ Error adding purchase\\. Please try again\\.', { parse_mode: 'MarkdownV2' });
+      }
+    });
+
+    // Portfolio sell command
+    this.bot.onText(/\/sell (\w+) ([0-9.]+) ([0-9.]+)/, async (msg, match) => {
+      const chatId = msg.chat.id;
+      const symbol = match![1].toUpperCase();
+      const amount = parseFloat(match![2]);
+      const price = parseFloat(match![3]);
+
+      try {
+        const crypto = PriceService.findCryptoBySymbol(symbol);
+        if (!crypto) {
+          this.bot.sendMessage(chatId, `❌ Cryptocurrency *${MessageFormatter.escapeMarkdown(symbol)}* not found\\. Use \`/list\` to see available cryptos\\.`, { parse_mode: 'MarkdownV2' });
+          return;
+        }
+
+        if (amount <= 0 || price <= 0) {
+          this.bot.sendMessage(chatId, '❌ Amount and price must be positive numbers\\.', { parse_mode: 'MarkdownV2' });
+          return;
+        }
+
+        const portfolioEntry = new PortfolioEntry({
+          chatId,
+          cryptoId: crypto.id,
+          type: 'sell',
+          amount,
+          price
+        });
+
+        await portfolioEntry.save();
+
+        this.bot.sendMessage(chatId, 
+          `✅ *Sale Added*\n\n` +
+          `${crypto.emoji} *${crypto.symbol}:* ${amount} at $${price.toLocaleString()}\n` +
+          `💰 *Total Received:* $${(amount * price).toLocaleString()}\n\n` +
+          `Use \`/portfolio\` to view your complete portfolio\\.`,
+          { parse_mode: 'MarkdownV2' }
+        );
+      } catch (error) {
+        console.error('Error adding sale:', error);
+        this.bot.sendMessage(chatId, '❌ Error adding sale\\. Please try again\\.', { parse_mode: 'MarkdownV2' });
+      }
+    });
+
+    // Portfolio view command
+    this.bot.onText(/\/portfolio$/, async (msg) => {
+      const chatId = msg.chat.id;
+
+      try {
+        const entries = await PortfolioEntry.find({ chatId }).sort({ timestamp: -1 });
+        
+        if (entries.length === 0) {
+          this.bot.sendMessage(chatId, 
+            '📈 *Your Portfolio*\n\n' +
+            '📪 No portfolio entries yet\\.\n\n' +
+            '*Get Started:*\n' +
+            '• `/buy ETH 0.5 3800` \\- Add a purchase\n' +
+            '• `/sell BTC 0.1 65000` \\- Add a sale',
+            { parse_mode: 'MarkdownV2' }
+          );
+          return;
+        }
+
+        // Calculate holdings per crypto
+        const holdings = new Map<string, { amount: number, totalCost: number, totalReceived: number }>();
+        
+        for (const entry of entries) {
+          const current = holdings.get(entry.cryptoId) || { amount: 0, totalCost: 0, totalReceived: 0 };
+          
+          if (entry.type === 'buy') {
+            current.amount += entry.amount;
+            current.totalCost += entry.amount * entry.price;
+          } else {
+            current.amount -= entry.amount;
+            current.totalReceived += entry.amount * entry.price;
+          }
+          
+          holdings.set(entry.cryptoId, current);
+        }
+
+        // Get current prices for P&L calculation
+        const cryptoIds = Array.from(holdings.keys());
+        const pricesData = await this.getCryptoPrices(cryptoIds);
+        const settings = await this.getUserSettings(chatId);
+        
+        let message = '📈 *Your Portfolio*\n\n';
+        let totalInvestment = 0;
+        let totalCurrentValue = 0;
+        let totalRealized = 0;
+
+        for (const [cryptoId, holding] of holdings.entries()) {
+          if (holding.amount <= 0.000001 && holding.totalCost === 0) continue; // Skip zero holdings
+          
+          const crypto = PriceService.findCryptoById(cryptoId);
+          const priceData = pricesData.find(p => PriceService.findCryptoBySymbol(p.symbol)?.id === cryptoId);
+          
+          if (!crypto || !priceData) continue;
+          
+          const currentPrice = settings.currency === 'usd' ? priceData.priceUsd : priceData.priceEur;
+          const currencySymbol = settings.currency === 'usd' ? '$' : '€';
+          
+          const currentValue = holding.amount * currentPrice;
+          const netCost = holding.totalCost - holding.totalReceived;
+          const unrealizedPL = currentValue - netCost;
+          const unrealizedPLPercent = netCost > 0 ? (unrealizedPL / netCost) * 100 : 0;
+          const avgBuyPrice = holding.totalCost > 0 ? holding.totalCost / Math.max(holding.amount + (holding.totalReceived / currentPrice), holding.amount) : 0;
+          
+          totalInvestment += netCost;
+          totalCurrentValue += currentValue;
+          totalRealized += holding.totalReceived;
+          
+          const plEmoji = unrealizedPL >= 0 ? '📈' : '📉';
+          const plSign = unrealizedPL >= 0 ? '+' : '';
+          
+          message += `${crypto.emoji} *${crypto.symbol}*\n`;
+          message += `📊 Amount: ${MessageFormatter.escapeMarkdown(holding.amount.toFixed(6))}\n`;
+          message += `💰 Avg Price: ${currencySymbol}${MessageFormatter.escapeMarkdown(avgBuyPrice.toFixed(2))}\n`;
+          message += `🔥 Current: ${currencySymbol}${MessageFormatter.escapeMarkdown(currentPrice.toLocaleString())}\n`;
+          message += `💵 Value: ${currencySymbol}${MessageFormatter.escapeMarkdown(currentValue.toLocaleString())}\n`;
+          message += `${plEmoji} P&L: ${plSign}${currencySymbol}${MessageFormatter.escapeMarkdown(Math.abs(unrealizedPL).toLocaleString())} \\(${plSign}${MessageFormatter.escapeMarkdown(unrealizedPLPercent.toFixed(1))}%\\)\n\n`;
+        }
+        
+        // Portfolio summary
+        const totalPL = (totalCurrentValue + totalRealized) - totalInvestment;
+        const totalPLPercent = totalInvestment > 0 ? (totalPL / totalInvestment) * 100 : 0;
+        const plEmoji = totalPL >= 0 ? '🚀' : '💥';
+        const plSign = totalPL >= 0 ? '+' : '';
+        const currencySymbol = settings.currency === 'usd' ? '$' : '€';
+        
+        message += '*📊 Portfolio Summary*\n';
+        message += `💰 Total Invested: ${currencySymbol}${MessageFormatter.escapeMarkdown(totalInvestment.toLocaleString())}\n`;
+        message += `💵 Current Value: ${currencySymbol}${MessageFormatter.escapeMarkdown(totalCurrentValue.toLocaleString())}\n`;
+        message += `💸 Total Realized: ${currencySymbol}${MessageFormatter.escapeMarkdown(totalRealized.toLocaleString())}\n`;
+        message += `${plEmoji} Total P&L: ${plSign}${currencySymbol}${MessageFormatter.escapeMarkdown(Math.abs(totalPL).toLocaleString())} \\(${plSign}${MessageFormatter.escapeMarkdown(totalPLPercent.toFixed(1))}%\\)`;
+
+        this.bot.sendMessage(chatId, message, { parse_mode: 'MarkdownV2' });
+      } catch (error) {
+        console.error('Error fetching portfolio:', error);
+        this.bot.sendMessage(chatId, '❌ Error fetching portfolio\\. Please try again\\.', { parse_mode: 'MarkdownV2' });
+      }
+    });
+
+    // Clear portfolio command
+    this.bot.onText(/\/clearportfolio(?:\s+(\w+))?/, async (msg, match) => {
+      const chatId = msg.chat.id;
+      const symbol = match?.[1]?.toUpperCase();
+
+      try {
+        if (symbol) {
+          const crypto = PriceService.findCryptoBySymbol(symbol);
+          if (!crypto) {
+            this.bot.sendMessage(chatId, `❌ Cryptocurrency *${MessageFormatter.escapeMarkdown(symbol)}* not found\\. Use \`/list\` to see available cryptos\\.`, { parse_mode: 'MarkdownV2' });
+            return;
+          }
+          
+          const result = await PortfolioEntry.deleteMany({ chatId, cryptoId: crypto.id });
+          this.bot.sendMessage(chatId, 
+            `✅ Cleared ${result.deletedCount} ${crypto.emoji} *${crypto.symbol}* portfolio entries\\.`,
+            { parse_mode: 'MarkdownV2' }
+          );
+        } else {
+          const result = await PortfolioEntry.deleteMany({ chatId });
+          this.bot.sendMessage(chatId, 
+            `✅ Cleared all portfolio entries \\(${result.deletedCount} entries\\)\\.`,
+            { parse_mode: 'MarkdownV2' }
+          );
+        }
+      } catch (error) {
+        console.error('Error clearing portfolio:', error);
+        this.bot.sendMessage(chatId, '❌ Error clearing portfolio\\. Please try again\\.', { parse_mode: 'MarkdownV2' });
       }
     });
   }

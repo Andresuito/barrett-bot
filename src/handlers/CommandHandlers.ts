@@ -1139,8 +1139,8 @@ export class CommandHandlers {
 
         this.bot.sendMessage(chatId, 
           `✅ *Purchase Added*\n\n` +
-          `${crypto.emoji} *${crypto.symbol}:* ${amount} at $${price.toLocaleString()}\n` +
-          `💰 *Total Cost:* $${(amount * price).toLocaleString()}\n\n` +
+          `${crypto.emoji} *${crypto.symbol}:* ${MessageFormatter.escapeMarkdown(amount.toString())} at $${MessageFormatter.escapeMarkdown(price.toLocaleString())}\n` +
+          `💰 *Total Cost:* $${MessageFormatter.escapeMarkdown((amount * price).toLocaleString())}\n\n` +
           `Use \`/portfolio\` to view your complete portfolio\\.`,
           { parse_mode: 'MarkdownV2' }
         );
@@ -1181,8 +1181,8 @@ export class CommandHandlers {
 
         this.bot.sendMessage(chatId, 
           `✅ *Sale Added*\n\n` +
-          `${crypto.emoji} *${crypto.symbol}:* ${amount} at $${price.toLocaleString()}\n` +
-          `💰 *Total Received:* $${(amount * price).toLocaleString()}\n\n` +
+          `${crypto.emoji} *${crypto.symbol}:* ${MessageFormatter.escapeMarkdown(amount.toString())} at $${MessageFormatter.escapeMarkdown(price.toLocaleString())}\n` +
+          `💰 *Total Received:* $${MessageFormatter.escapeMarkdown((amount * price).toLocaleString())}\n\n` +
           `Use \`/portfolio\` to view your complete portfolio\\.`,
           { parse_mode: 'MarkdownV2' }
         );
@@ -1204,8 +1204,8 @@ export class CommandHandlers {
             '📈 *Your Portfolio*\n\n' +
             '📪 No portfolio entries yet\\.\n\n' +
             '*Get Started:*\n' +
-            '• `/buy ETH 0.5 3800` \\- Add a purchase\n' +
-            '• `/sell BTC 0.1 65000` \\- Add a sale',
+            '• `/buy ETH 0\\.5 3800` \\- Add a purchase\n' +
+            '• `/sell BTC 0\\.1 65000` \\- Add a sale',
             { parse_mode: 'MarkdownV2' }
           );
           return;
@@ -1305,13 +1305,13 @@ export class CommandHandlers {
           
           const result = await PortfolioEntry.deleteMany({ chatId, cryptoId: crypto.id });
           this.bot.sendMessage(chatId, 
-            `✅ Cleared ${result.deletedCount} ${crypto.emoji} *${crypto.symbol}* portfolio entries\\.`,
+            `✅ Cleared ${MessageFormatter.escapeMarkdown(result.deletedCount.toString())} ${crypto.emoji} *${crypto.symbol}* portfolio entries\\.`,
             { parse_mode: 'MarkdownV2' }
           );
         } else {
           const result = await PortfolioEntry.deleteMany({ chatId });
           this.bot.sendMessage(chatId, 
-            `✅ Cleared all portfolio entries \\(${result.deletedCount} entries\\)\\.`,
+            `✅ Cleared all portfolio entries \\(${MessageFormatter.escapeMarkdown(result.deletedCount.toString())} entries\\)\\.`,
             { parse_mode: 'MarkdownV2' }
           );
         }

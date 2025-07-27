@@ -158,7 +158,7 @@ export class CommandHandlers {
               const unrealizedPLPercent = netCost > 0 ? (unrealizedPL / netCost) * 100 : 0;
               
               const plEmoji = unrealizedPL >= 0 ? '📈' : '📉';
-              const plSign = unrealizedPL >= 0 ? '+' : '';
+              const plSign = unrealizedPL >= 0 ? '\\+' : '';
               
               portfolioSummary += `${crypto.emoji} ${MessageFormatter.escapeMarkdown(holding.amount.toFixed(6))} ${crypto.symbol} `;
               portfolioSummary += `${plEmoji} ${plSign}${currencySymbol}${MessageFormatter.escapeMarkdown(Math.abs(unrealizedPL).toLocaleString())} \\(${plSign}${MessageFormatter.escapeMarkdown(unrealizedPLPercent.toFixed(1))}%\\)\n`;
@@ -1260,7 +1260,7 @@ export class CommandHandlers {
           totalRealized += holding.totalReceived;
           
           const plEmoji = unrealizedPL >= 0 ? '📈' : '📉';
-          const plSign = unrealizedPL >= 0 ? '+' : '';
+          const plSign = unrealizedPL >= 0 ? '\\+' : '';
           
           message += `${crypto.emoji} *${crypto.symbol}*\n`;
           message += `📊 Amount: ${MessageFormatter.escapeMarkdown(holding.amount.toFixed(6))}\n`;
@@ -1274,7 +1274,7 @@ export class CommandHandlers {
         const totalPL = (totalCurrentValue + totalRealized) - totalInvestment;
         const totalPLPercent = totalInvestment > 0 ? (totalPL / totalInvestment) * 100 : 0;
         const plEmoji = totalPL >= 0 ? '🚀' : '💥';
-        const plSign = totalPL >= 0 ? '+' : '';
+        const plSign = totalPL >= 0 ? '\\+' : '';
         const currencySymbol = settings.currency === 'usd' ? '$' : '€';
         
         message += '*📊 Portfolio Summary*\n';
